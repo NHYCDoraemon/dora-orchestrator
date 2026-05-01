@@ -1,0 +1,21 @@
+{
+  "project_slug": "dora-context-assembly",
+  "title": "Dora Context Assembly",
+  "tasks": [
+    {
+      "external_id": "S1.5-P1-01",
+      "title": "Compile context assembly baseline",
+      "cycle": "S1.5",
+      "module": "context-assembly",
+      "priority": "P1",
+      "depends_on": [],
+      "acceptance": [
+        "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'"
+      ],
+      "verification_level": ["L1", "L2", "L3"],
+      "risk": "medium",
+      "agent_hint": "noop"
+    }
+  ]
+}
+
