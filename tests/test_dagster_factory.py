@@ -156,9 +156,7 @@ class HelpersTest(unittest.TestCase):
     """Tests for utility helpers in ops.py that don't need dagster."""
 
     def test_extract_batch_id_strips_program_and_task_segments(self):
-        if importlib.util.find_spec("dagster") is None:
-            self.skipTest("dagster not installed")
-        from orchestrator.dagster_defs.ops import _extract_batch_id
+        from orchestrator.run_ready_task import _extract_batch_id
 
         self.assertEqual(_extract_batch_id("DORA-AGCORE-20260501C-T01"), "20260501C")
         self.assertEqual(_extract_batch_id("DORA-MATH-20260501D-T16"), "20260501D")

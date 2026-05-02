@@ -222,16 +222,17 @@ class LivePlaneClient:
                 if is_stale:
                     adapted["_stale_reclaim"] = True
                     reclaimed += 1
-                candidates.append((_priority_sort_key(adapted.get("priority", "")), external_id, adapted))
+                batch_key = _batch_sort_key(external_id)
+                candidates.append((_priority_sort_key(adapted.get("priority", "")), batch_key, external_id, adapted))
         if reclaimed:
-            candidates.sort(key=lambda item: (item[0], item[1]))
+            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
             # Prefer reclaimed stale locks so they get unstuck first.
-            stale_candidates = [c for c in candidates if c[2].get("_stale_reclaim")]
-            fresh_candidates = [c for c in candidates if not c[2].get("_stale_reclaim")]
+            stale_candidates = [c for c in candidates if c[3].get("_stale_reclaim")]
+            fresh_candidates = [c for c in candidates if not c[3].get("_stale_reclaim")]
             candidates = stale_candidates + fresh_candidates
         else:
-            candidates.sort(key=lambda item: (item[0], item[1]))
-        return candidates[0][2] if candidates else None
+            candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return candidates[0][3] if candidates else None
 
     def claim_issue(self, project_slug: str, external_id: str, run_id: str) -> dict[str, Any]:
         if not self.settings.agent_uuid:
@@ -242,6 +243,8 @@ class LivePlaneClient:
             "assignees": [self.settings.agent_uuid],
         }
         updated = self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", payload)
+        # Tag with run label so we can recover if this run crashes.
+        self.add_label(project_slug, external_id, _run_label(run_id))
         return _adapt_issue(updated if isinstance(updated, dict) else issue)
 
     def release_issue(self, project_slug: str, external_id: str, state: str) -> dict[str, Any]:
@@ -391,6 +394,40 @@ class LivePlaneClient:
             desc = desc.replace("---\n", f"---\ndora_retry_count: {count}\n", 1)
         self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", {"description_html": desc})
         self._issue_by_external_id = None
+
+    def _recover_run_claims(self, project_slug: str, run_id: str) -> int:
+        """Release any issues stuck In Progress from a previous attempt of *run_id*.
+
+        Looks for the ``orch-run-<short>`` label that claim_issue attaches.
+        Returns the number of recovered issues.
+        """
+        label_name = _run_label(run_id)
+        states = self._states()
+        in_progress_id = states.get("In Progress")
+        backlog_id = states.get("Backlog")
+        recovered = 0
+        label_ids = self._labels()
+        target_id = label_ids.get(label_name, {}).get("id") if isinstance(label_ids, dict) else None
+        if not target_id:
+            return 0
+        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+            if issue.get("state") != in_progress_id:
+                continue
+            issue_labels = list(issue.get("labels") or [])
+            if target_id in issue_labels:
+                eid = issue.get("external_id", "")
+                try:
+                    self.api.v1(
+                        "PATCH",
+                        f"{self.proj_v1}/issues/{issue['id']}/",
+                        {"state": backlog_id, "assignees": []},
+                    )
+                    if eid:
+                        self.remove_label(project_slug, eid, label_name)
+                    recovered += 1
+                except Exception:
+                    pass
+        return recovered
 
     def _resolve_issue_full(self, external_id: str) -> dict[str, Any]:
         """Like _resolve_issue but ensures fields like `labels` are populated.
@@ -828,6 +865,20 @@ def _priority_sort_key(priority: str) -> int:
     return _PRIORITY_RANK.get(str(priority).lower(), len(_PRIORITY_RANK))
 
 
+def _batch_sort_key(external_id: str) -> str:
+    """Extract the batch-date segment from *external_id* for chronological sort.
+
+    External IDs have the form ``<PROJECT>-<PROGRAM>-<YYYYMMDDA>-T<NN>``.  The
+    third segment (e.g. ``20260501C``) encodes both date and daily sequence
+    letter, so lexicographic sort on it yields chronological order and keeps
+    older batches ahead of newer ones regardless of project-name prefix.
+    """
+    parts = external_id.split("-")
+    if len(parts) >= 3:
+        return parts[2]
+    return external_id
+
+
 def _project_identifier(slug: str) -> str:
     identifier = "".join(ch for ch in slug.upper() if ch.isalnum())
     return (identifier or "DORA")[:5]
@@ -858,3 +909,12 @@ def _render_run_report(report: dict[str, Any]) -> str:
     for key in sorted(report):
         lines.append(f"- {key}: {report[key]}")
     return "\n".join(lines) + "\n"
+
+
+def _run_label(run_id: str) -> str:
+    """Return a stable Plane label name for *run_id*.
+
+    Uses the first 8 characters to keep the label short and readable.
+    """
+    short = run_id.split("-")[0] if "-" in run_id else run_id[:8]
+    return f"orch-run-{short}"

@@ -1,7 +1,11 @@
 """Run one ready task through the orchestrator protocol."""
 
+from __future__ import annotations
+
+import json
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING, Callable
 
 from .config import OrchestratorConfig
 from .executor_protocol import TaskRunContext
@@ -12,6 +16,9 @@ from .plane_backends import create_plane_client
 from .plane_provisioner import provision_project
 from .spec_loader import load_project_spec
 from .task_graph import build_task_graph
+
+if TYPE_CHECKING:
+    from .delivery import DeliveryConfig
 
 
 def run_ready_task(
@@ -103,6 +110,8 @@ def run_ready_batch_task(
     plane_client=None,
     run_id: str,
     max_loops: int = 10,
+    delivery: DeliveryConfig | None = None,
+    on_progress: Callable[[str, dict], None] | None = None,
 ) -> dict[str, object]:
     """Run ready batch-submitted tasks in a self-driven loop.
 
@@ -115,6 +124,9 @@ def run_ready_batch_task(
     executor, and runs `verification_commands` before deciding the terminal
     state.
 
+    If *delivery* is provided, each task also goes through the git delivery
+    pipeline (worktree, commit, push, PR, merge) after release.
+
     Returns a summary dict with ``runs`` (list of per-task results) and
     ``loop_count``.
     """
@@ -123,13 +135,18 @@ def run_ready_batch_task(
     if plane_client is None:
         plane_client = create_plane_client(config)
 
+    # Recover any issues left In Progress by a previous (crashed) attempt
+    # of this same run_id. Without this, a Dagster retry would claim a
+    # second task while the first one stays stuck In Progress forever.
+    _recover_run_claims(plane_client, config.project_slug, run_id)
+
     runs: list[dict[str, object]] = []
     attempted_ids: set[str] = set()
     loop = 0
     while loop < max_loops:
         loop += 1
         loop_run_id = run_id if loop == 1 else f"{run_id}-{loop}"
-        result = _execute_one_task(config, plane_client, loop_run_id, attempted_ids)
+        result = _execute_one_task(config, plane_client, loop_run_id, attempted_ids, delivery=delivery, on_progress=on_progress)
         runs.append(result)
         ext_id = result.get("external_id")
         if ext_id:
@@ -150,79 +167,219 @@ def _execute_one_task(
     plane_client,
     run_id: str,
     attempted_ids: set[str] | None = None,
+    *,
+    delivery: DeliveryConfig | None = None,
+    on_progress: Callable[[str, dict], None] | None = None,
 ) -> dict[str, object]:
-    """Execute a single ready task: claim → run → verify → release."""
+    """Execute a single ready task: claim -> run -> verify -> release.
+
+    If *delivery* is provided, git delivery steps (worktree, commit, push,
+    PR, merge) run after release, controlled by the config flags.
+
+    If *on_progress* is provided, it is called with ``(event, data)`` at
+    key transitions so the caller can forward progress to a UI logger.
+    """
     issue = plane_client.next_ready_issue(config.project_slug, exclude=attempted_ids or None)
     if issue is None:
+        if on_progress:
+            on_progress("no_ready", {"run_id": run_id})
         return {"outcome": "no_ready", "run_id": run_id}
 
     external_id = str(issue["external_id"])
+    name = str(issue.get("name", ""))
+    if on_progress:
+        on_progress("picked", {"external_id": external_id, "name": name, "priority": str(issue.get("priority", ""))})
+
     claimed = plane_client.claim_issue(config.project_slug, external_id, run_id)
     _emit(plane_client, config.project_slug, external_id, "dora-loop:claim",
           f"claimed by run_id={run_id}")
+    if on_progress:
+        on_progress("claimed", {"external_id": external_id, "run_id": run_id})
 
-    artifacts = create_run_artifacts(config.target_repo, run_id)
-    artifacts.prompt_path.write_text(_render_batch_prompt(claimed), encoding="utf-8")
+    _released = False
+    try:
+        executor_name = config.executor or str(claimed.get("agent_hint") or "noop")
 
-    executor_name = config.executor or str(claimed.get("agent_hint") or "noop")
-    executor = get_executor(executor_name)
-    context = TaskRunContext(
-        run_id=run_id,
-        issue_key=str(claimed["key"]),
-        external_id=external_id,
-        project_slug=config.project_slug,
-        repo_root=config.target_repo,
-        branch=f"orchestrator/{executor_name}/{claimed['key']}",
-        agent=executor_name,
-        prompt_path=artifacts.prompt_path,
-        event_path=artifacts.event_path,
-        verification_level=list(claimed.get("verification_level") or []),
-    )
-    result = executor.run(context)
-    _emit(plane_client, config.project_slug, external_id,
-          f"dora-loop:tool:{executor_name}",
-          f"outcome={result.outcome}\nsummary={result.summary}\n"
-          f"touched_files={[str(p) for p in result.touched_files]}")
+        # --- worktree / repo setup -----------------------------------------
+        batch_id = _extract_batch_id(external_id)
+        if delivery is not None and delivery.enable_commit:
+            from .delivery import ensure_worktree
 
-    verification = _run_verification_commands(
-        list(claimed.get("verification_commands") or []),
-        config.target_repo,
-    )
-    _emit(plane_client, config.project_slug, external_id, "dora-loop:verify",
-          _format_verification(verification))
+            wt_branch = f"{_batch_branch_prefix(delivery)}/{batch_id}" if batch_id else ""
+            wt_path = delivery.worktree_root / delivery.project_slug / batch_id
+            wt_created, wt_refreshed = ensure_worktree(
+                delivery.repo_root, wt_path, wt_branch, delivery.base_branch,
+                auto_clean=True,
+            )
+            repo_root = wt_path
+            branch = wt_branch
+            if wt_created:
+                _emit(plane_client, config.project_slug, external_id,
+                      "dora-loop:branch",
+                      f"worktree={wt_path}\nbranch={branch}\ncreated=True")
+            if wt_refreshed:
+                _emit(plane_client, config.project_slug, external_id,
+                      "dora-loop:branch:refreshed",
+                      f"refreshed {branch} from {delivery.base_branch}")
+        else:
+            repo_root = config.target_repo
+            branch = f"orchestrator/{executor_name}/{claimed['key']}"
 
-    if result.outcome == "agent_done" and not verification["pass"]:
-        outcome = "agent_unverified"
-    else:
-        outcome = result.outcome
+        artifacts = create_run_artifacts(repo_root, run_id)
+        if delivery is not None and delivery.enable_commit:
+            prompt_text = _render_executor_prompt(
+                claimed, batch_id=_extract_batch_id(external_id),
+                branch=branch, worktree_path=delivery.worktree_path,
+            )
+        else:
+            prompt_text = _render_batch_prompt(claimed)
+        artifacts.prompt_path.write_text(prompt_text, encoding="utf-8")
 
-    retry_count = _read_retry_count(claimed)
-    if outcome == "agent_done":
-        terminal_state = "Done"
-    elif retry_count >= 3:
-        outcome = "agent_unverified"
-        terminal_state = "Needs Input"
-    else:
-        terminal_state = "Partial"
-        retry_count += 1
-        _write_retry_count(plane_client, config.project_slug, external_id, retry_count)
+        executor = get_executor(executor_name)
+        if on_progress:
+            on_progress("executor_started", {"external_id": external_id, "agent": executor_name})
 
-    if outcome != "agent_done" and hasattr(plane_client, "add_label"):
-        label = "needs:review" if terminal_state == "Partial" else "needs:input"
-        plane_client.add_label(config.project_slug, external_id, label)
+        def _on_executor_line(line: str) -> None:
+            if on_progress:
+                summary = _format_stream_line(line)
+                if summary:
+                    on_progress("executor_output", {"external_id": external_id, "summary": summary})
 
-    plane_client.publish_run_report(
-        config.project_slug,
-        external_id,
-        {
-            "run_id": run_id,
-            "outcome": outcome,
-            "summary": result.summary,
-            "event_path": str(artifacts.event_path),
-            "verification": verification,
-        },
-    )
-    plane_client.release_issue(config.project_slug, external_id, terminal_state)
+        context = TaskRunContext(
+            run_id=run_id,
+            issue_key=str(claimed["key"]),
+            external_id=external_id,
+            project_slug=config.project_slug,
+            repo_root=repo_root,
+            branch=branch,
+            agent=executor_name,
+            prompt_path=artifacts.prompt_path,
+            event_path=artifacts.event_path,
+            verification_level=list(claimed.get("verification_level") or []),
+            idle_timeout_seconds=delivery.idle_timeout_seconds if delivery else 600,
+            hard_timeout_seconds=delivery.hard_timeout_seconds if delivery else 3600,
+            on_line=_on_executor_line,
+        )
+        result = executor.run(context)
+        if on_progress:
+            on_progress("executor_done", {"external_id": external_id, "outcome": result.outcome,
+                          "touched_files": len(result.touched_files)})
+        _emit(plane_client, config.project_slug, external_id,
+              f"dora-loop:tool:{executor_name}",
+              f"outcome={result.outcome}\nsummary={result.summary}\n"
+              f"touched_files={[str(p) for p in result.touched_files]}")
+
+        verification = _run_verification_commands(
+            list(claimed.get("verification_commands") or []),
+            repo_root,
+        )
+        _emit(plane_client, config.project_slug, external_id, "dora-loop:verify",
+              _format_verification(verification))
+        if on_progress:
+            on_progress("verification", {"external_id": external_id, "pass": verification["pass"],
+                         "skipped": verification.get("skipped", False)})
+
+        if result.outcome == "agent_done" and not verification["pass"]:
+            outcome = "agent_unverified"
+        else:
+            outcome = result.outcome
+
+        retry_count = _read_retry_count(claimed)
+        if outcome == "agent_done":
+            terminal_state = "Done"
+        elif retry_count >= 3:
+            outcome = "agent_unverified"
+            terminal_state = "Needs Input"
+        else:
+            terminal_state = "Partial"
+            retry_count += 1
+            _write_retry_count(plane_client, config.project_slug, external_id, retry_count)
+
+        if outcome != "agent_done" and hasattr(plane_client, "add_label"):
+            label = _classify_label(outcome, terminal_state)
+            plane_client.add_label(config.project_slug, external_id, label)
+
+        plane_client.publish_run_report(
+            config.project_slug,
+            external_id,
+            {
+                "run_id": run_id,
+                "outcome": outcome,
+                "summary": result.summary,
+                "event_path": str(artifacts.event_path),
+                "verification": verification,
+            },
+        )
+        plane_client.release_issue(config.project_slug, external_id, terminal_state)
+        _released = True
+        if on_progress:
+            on_progress("released", {"external_id": external_id, "state": terminal_state, "outcome": outcome})
+    except BaseException:
+        if on_progress:
+            on_progress("crash", {"external_id": external_id, "run_id": run_id})
+        raise
+    finally:
+        if not _released:
+            try:
+                plane_client.release_issue(config.project_slug, external_id, "Partial")
+                if on_progress:
+                    on_progress("emergency_release", {"external_id": external_id, "state": "Partial"})
+                _emit(plane_client, config.project_slug, external_id,
+                      "dora-loop:emergency-release",
+                      f"crashed run {run_id} — released to Partial")
+            except Exception:
+                pass
+
+    # --- optional git delivery ----------------------------------------
+    delivery_result = None
+    if delivery is not None:
+        from .delivery import run_delivery
+
+        delivery_result = run_delivery(
+            delivery,
+            worktree_path=repo_root if delivery.enable_commit else delivery.worktree_path,
+            branch=branch,
+            batch_id=batch_id,
+            external_id=external_id,
+            task_title=str(claimed.get("name") or external_id),
+            outcome=outcome,
+            verification_pass=verification["pass"],
+            verification_results=verification.get("results", []),
+            run_id=run_id,
+        )
+        # Reclassify outcome based on delivery results.
+        if outcome == "agent_done" and not delivery_result.commit_sha:
+            outcome = "agent_no_changes"
+        elif (
+            outcome.startswith("agent_err")
+            and delivery_result.commit_sha
+            and verification["pass"]
+        ):
+            outcome = "agent_done"
+        if delivery_result.commit_sha:
+            _emit(plane_client, config.project_slug, external_id,
+                  "dora-loop:commit",
+                  f"sha={delivery_result.commit_sha}\n"
+                  f"branch={branch}\n"
+                  f"is_wip={delivery_result.is_wip}")
+        if delivery_result.pushed:
+            _emit(plane_client, config.project_slug, external_id,
+                  "dora-loop:push",
+                  f"pushed {branch}")
+        if delivery_result.pr_url:
+            _emit(plane_client, config.project_slug, external_id,
+                  "dora-loop:pr",
+                  f"PR: {delivery_result.pr_url}")
+        if delivery_result.merged:
+            _emit(plane_client, config.project_slug, external_id,
+                  "dora-loop:merge",
+                  f"merged via {delivery_result.merge_strategy}")
+        if on_progress:
+            on_progress("delivery", {"external_id": external_id,
+                         "commit_sha": delivery_result.commit_sha,
+                         "pushed": delivery_result.pushed,
+                         "pr_url": delivery_result.pr_url,
+                         "merged": delivery_result.merged})
 
     batch_id = _extract_batch_id(external_id)
     if batch_id and hasattr(plane_client, "update_page"):
@@ -232,7 +389,7 @@ def _execute_one_task(
             _emit(plane_client, config.project_slug, external_id, "dora-loop:page",
                   f"batch page refresh skipped: {exc}")
 
-    return {
+    ret: dict[str, object] = {
         "outcome": outcome,
         "state": terminal_state,
         "run_id": run_id,
@@ -242,6 +399,59 @@ def _execute_one_task(
         "verification": verification,
         "touched_files": [str(path) for path in result.touched_files],
     }
+    if delivery_result is not None:
+        ret["delivery"] = {
+            "commit_sha": delivery_result.commit_sha,
+            "is_wip": delivery_result.is_wip,
+            "pushed": delivery_result.pushed,
+            "pr_url": delivery_result.pr_url,
+            "merged": delivery_result.merged,
+            "merge_strategy": delivery_result.merge_strategy,
+        }
+    return ret
+
+
+def _recover_run_claims(plane_client, project_slug: str, run_id: str) -> int:
+    """Release any issues stuck In Progress from a previous attempt of *run_id*.
+
+    Returns the number of recovered issues.
+    """
+    recovered = 0
+    # InMemory / Local backends: iterate the issues dict directly.
+    if hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
+        for (slug, eid), issue in list(plane_client.issues.items()):
+            if slug != project_slug:
+                continue
+            if issue.get("state") != "In Progress":
+                continue
+            assignee = str(issue.get("assignee") or "")
+            if assignee and assignee.startswith(run_id):
+                try:
+                    plane_client.release_issue(project_slug, eid, "Backlog")
+                    recovered += 1
+                except (RuntimeError, KeyError):
+                    pass
+        return recovered
+    # Live backend: use the API to find and release stale claims.
+    if hasattr(plane_client, "_recover_run_claims"):
+        return plane_client._recover_run_claims(project_slug, run_id)
+    return recovered
+
+
+def _classify_label(outcome: str, terminal_state: str) -> str:
+    """Map executor outcome to a human-actionable Plane label."""
+    if outcome == "agent_config_error":
+        return "needs:config"
+    if outcome == "agent_transient_error":
+        return "needs:auto-retry"
+    if outcome in (
+        "agent_unverified", "agent_no_changes",
+        "agent_idle_timeout", "agent_hard_timeout",
+    ):
+        return "needs:review"
+    if terminal_state == "Partial":
+        return "needs:review"
+    return "needs:input"
 
 
 def _emit(plane_client, project_slug, external_id, marker, body):
@@ -251,6 +461,155 @@ def _emit(plane_client, project_slug, external_id, marker, body):
         plane_client.add_comment(project_slug, external_id, body, marker=marker)
     except (RuntimeError, KeyError):
         pass
+
+
+def _format_stream_line(line: str) -> str | None:
+    """Parse one Claude stream-json line into a single-line human-readable summary.
+
+    Tool-use events show the concrete target (file path, command, pattern).
+    Tool-result events show the *last* non-empty output line — typically more
+    informative than the first (which for files is often ``package foo``).
+    """
+    try:
+        evt = json.loads(line)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    evt_type = evt.get("type", "")
+    subtype = evt.get("subtype", "")
+
+    # --- system events ---------------------------------------------------
+    if evt_type == "system":
+        if subtype == "init":
+            model = evt.get("model", "?")
+            sid = evt.get("session_id", "")[:8]
+            return f"◈  model={model}  session={sid}"
+        if subtype in ("hook_started", "hook_response"):
+            name = evt.get("hook_name", "?")
+            event = evt.get("hook_event", "")
+            outcome = evt.get("outcome", "")
+            label = f"{name}:{event}"
+            if outcome:
+                label += f"  outcome={outcome}"
+            return f"⚡ hook  {label}"
+        return None
+
+    # --- assistant message ------------------------------------------------
+    if evt_type == "assistant":
+        msg = evt.get("message", {})
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return None
+        parts: list[str] = []
+        for block in content:
+            ct = block.get("type", "")
+            if ct == "thinking":
+                text = str(block.get("thinking", ""))
+                for tline in text.split("\n"):
+                    stripped = tline.strip()
+                    if stripped and not stripped.startswith("{"):
+                        parts.append(f"◉  {stripped[:200]}")
+                        break
+            elif ct == "text":
+                text = str(block.get("text", ""))
+                first = text.strip().split("\n")[0][:200]
+                if first:
+                    parts.append(f"▸ {first}")
+            elif ct == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {}) if isinstance(block.get("input"), dict) else {}
+                target = _tool_target(name, inp)
+                if target:
+                    parts.append(f"▶ {name}  |  {target}")
+                else:
+                    parts.append(f"▶ {name}")
+        return "\n".join(parts) if parts else None
+
+    # --- user message (tool results) -------------------------------------
+    if evt_type == "user":
+        msg = evt.get("message", {})
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return None
+        parts = []
+        for block in content:
+            ct = block.get("type", "")
+            if ct != "tool_result":
+                continue
+            raw = block.get("content", "")
+            tool_id = str(block.get("tool_use_id", ""))[:12]
+            if isinstance(raw, str):
+                non_empty = [l for l in raw.split("\n") if l.strip()]
+                if non_empty:
+                    # Last non-empty line is usually the most informative:
+                    # for files it's actual code, for commands it's the result.
+                    last = non_empty[-1].strip()[:200]
+                    if len(non_empty) == 1:
+                        parts.append(f"✓ {tool_id}  |  {last}")
+                    else:
+                        parts.append(f"✓ {tool_id}  |  {len(raw)}c {len(non_empty)}L  |  {last}")
+                elif raw.strip():
+                    parts.append(f"✓ {tool_id}  |  {len(raw)} chars")
+            elif isinstance(raw, list):
+                n = len(raw)
+                preview = ""
+                if n > 0:
+                    preview = str(raw[-1])[:120] if isinstance(raw[-1], str) else str(raw[-1])[:120]
+                parts.append(f"✓ {tool_id}  |  list[{n}]  {preview}")
+            elif isinstance(raw, dict):
+                parts.append(f"✓ {tool_id}  |  dict keys={list(raw.keys())[:5]}")
+        return "\n".join(parts) if parts else None
+
+    # --- result -----------------------------------------------------------
+    if evt_type == "result":
+        is_error = evt.get("is_error", False)
+        res_text = str(evt.get("result", "") or "")
+        summary = ""
+        for rline in res_text.split("\n"):
+            s = rline.strip()
+            if s:
+                summary = s[:200]
+                break
+        if is_error:
+            return f"✗ {subtype}  |  {summary}"
+        return f"★ {subtype}  |  {summary}"
+
+    return None
+
+
+def _tool_target(name: str, inp: dict) -> str:
+    """Extract the most informative target string from a tool-use input dict."""
+    # Read / Edit / Write → file path (tail portion for readability)
+    fp = inp.get("file_path", "")
+    if fp:
+        parts = fp.replace("\\", "/").split("/")
+        # Show last 2-3 segments so the file is recognisable but not a mile long
+        if len(parts) >= 3:
+            short = "/".join(parts[-3:])
+        else:
+            short = fp
+        return short[:120]
+
+    # Bash → command
+    cmd = inp.get("command", "")
+    if cmd:
+        return cmd[:150]
+
+    # Grep / Glob → pattern
+    pattern = inp.get("pattern", "")
+    if pattern:
+        p = str(pattern)[:120]
+        path = inp.get("path", "")
+        if path:
+            p += f"  in {str(path)[:60]}"
+        return p
+
+    # Fallback: description
+    desc = inp.get("description", "")
+    if desc:
+        return str(desc)[:150]
+
+    return ""
 
 
 def _format_verification(verification: dict) -> str:
@@ -265,6 +624,13 @@ def _format_verification(verification: dict) -> str:
 def _extract_batch_id(external_id: str) -> str:
     parts = external_id.split("-")
     return parts[2] if len(parts) >= 3 else ""
+
+
+def _batch_branch_prefix(delivery) -> str:
+    """Return the git branch prefix from delivery config, or a sensible default."""
+    if hasattr(delivery, "git_branch_prefix") and delivery.git_branch_prefix:
+        return delivery.git_branch_prefix
+    return "orchestrator"
 
 
 def _refresh_batch_page(plane_client, project_slug: str, batch_id: str) -> None:
@@ -309,6 +675,72 @@ def _render_batch_prompt(issue: dict) -> str:
             return body if body.endswith("\n") else body + "\n"
     name = str(issue.get("name") or issue.get("external_id") or "")
     return f"# {name}\n"
+
+
+def _render_executor_prompt(
+    issue: dict,
+    *,
+    batch_id: str,
+    branch: str,
+    worktree_path,
+) -> str:
+    """Wrap the issue body with autonomous-execution framing.
+
+    Mirrors the old ops.py header: asserts the run is unattended, provides
+    worktree context, declares operating rules, and prohibits the dora-plane
+    skill so the agent does NOT try to claim/heartbeat/release on its own.
+    """
+    from pathlib import Path
+
+    body = _render_batch_prompt(issue)
+    wt_path = str(worktree_path)
+    ext_id = str(issue.get("external_id") or "")
+    issue_key = str(issue.get("key") or ext_id)
+    header = (
+        "You are running unattended inside the dora orchestrator. There is no "
+        "human in the loop on this run; act with full decision authority.\n\n"
+        f"# Task to execute now\n"
+        f"- **Plane Issue**: `{ext_id}`\n"
+        f"- **Batch**: `{batch_id}`\n"
+        f"- **Branch / cwd**: `{branch}` (you are already inside the "
+        f"worktree at `{wt_path}`)\n\n"
+        "# Operating rules\n"
+        "1. **Decide and act.** The Issue Packet below is the contract. Make "
+        "the most reasonable assumption it supports and proceed; do not ask "
+        "clarifying questions -- there is no one to answer.\n"
+        "2. **Use tools to materialize work.** Edit / Write / Bash (and any "
+        "agent skills you have) are how the run produces a diff. A "
+        "text-only response leaves the worktree clean and the task is "
+        "marked unverified.\n"
+        "3. **Stay in the worktree.** All edits go in `cwd`. Don't touch the "
+        "parent repo checkout.\n"
+        "4. **Don't commit.** The orchestrator stages and commits after you "
+        "exit. Just leave clean edits in the worktree.\n"
+        "5. **Stop conditions are real.** If the Issue Packet's Stop "
+        "Conditions trigger, stop, document why in a TODO file in the "
+        "worktree, and exit cleanly. Half-written placeholders beat zero "
+        "output.\n"
+        "6. **Acceptance is the success bar.** When you believe each "
+        "Acceptance bullet is satisfied, exit. The orchestrator will run "
+        "any declared verification commands automatically.\n\n"
+        "# Skills you must NOT invoke\n\n"
+        "The business repo may ship a `dora-plane` skill that teaches agents "
+        "to claim / heartbeat / release / comment via direct Plane API calls. "
+        "**Do NOT invoke it on this run.** The orchestrator already owns "
+        "those concerns:\n"
+        "- Claim was done by the orchestrator before you started.\n"
+        "- Release will be done by the orchestrator after you exit.\n"
+        "- Plane comments / labels / Pages are emitted by the orchestrator "
+        "  with `dora-loop:*` markers -- adding more from inside the agent "
+        "  produces duplicates and risks state-machine drift.\n\n"
+        "Just do the engineering work in the worktree and exit. "
+        "Other skills (e.g. `superpowers:test-driven-development`, "
+        "`superpowers:systematic-debugging`) are fine when contextually "
+        "relevant.\n\n"
+        "---\n\n"
+        "# Issue Packet\n\n"
+    )
+    return header + body
 
 
 MAX_RETRIES = 3

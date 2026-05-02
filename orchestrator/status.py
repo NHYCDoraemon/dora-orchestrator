@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     if total or blocked_issues:
         print(f"  Issues: {total if total else len(blocked_issues)} total", file=sys.stderr)
         for state, count in sorted(state_counts.items()):
-            flag = "  ⚠ " if state == "Blocked" else "    "
+            flag = "  [!] " if state == "Blocked" else "     "
             print(f"{flag}{state}: {count}", file=sys.stderr)
 
     if blocked_issues:

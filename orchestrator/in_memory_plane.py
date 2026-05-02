@@ -10,6 +10,14 @@ def _deps_satisfied(issue: dict[str, Any], done: set[str]) -> bool:
     return all(dep in done for dep in issue.get("depends_on", []))
 
 
+def _batch_sort_key(external_id: str) -> str:
+    """Extract the batch-date segment (third dash-group) for chronological sort."""
+    parts = external_id.split("-")
+    if len(parts) >= 3:
+        return parts[2]
+    return external_id
+
+
 @dataclass
 class InMemoryPlaneClient:
     projects: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -79,9 +87,10 @@ class InMemoryPlaneClient:
             if exclude and external_id in exclude:
                 continue
             if _deps_satisfied(issue, done):
-                candidates.append((issue.get("priority", ""), external_id, issue))
-        candidates.sort(key=lambda item: (item[0], item[1]))
-        return candidates[0][2] if candidates else None
+                batch_key = _batch_sort_key(external_id)
+                candidates.append((issue.get("priority", ""), batch_key, external_id, issue))
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return candidates[0][3] if candidates else None
 
     def claim_issue(self, project_slug: str, external_id: str, run_id: str) -> dict[str, Any]:
         issue = self.issues[(project_slug, external_id)]

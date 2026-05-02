@@ -1,11 +1,13 @@
 """Per-project Dagster Definitions factory.
 
-`build_project_defs(cfg)` produces a `Definitions` object containing one job,
-one schedule, and a handful of UI assets — all name-spaced by the project
-slug so multiple business repos can coexist in a single Dagster code location.
+``build_project_defs(cfg)`` produces a ``Definitions`` object containing one
+job, one schedule, and a handful of UI assets -- all name-spaced by the
+project slug so multiple business repos can coexist in a single Dagster
+code location.
 
-Ops are produced via closure-based factories in `orchestrator.dagster_defs.ops`,
-giving each project its own op instances rather than sharing global ops.
+The single job delegates all business logic to
+``orchestrator.run_ready_task.run_ready_batch_task`` via the thin op
+built by ``orchestrator.dagster_defs.ops.build_single_op``.
 """
 
 from pathlib import Path
@@ -27,7 +29,7 @@ from dagster import (
     schedule,
 )
 
-from .ops import build_ops
+from .ops import build_single_op
 from .project_config import ProjectConfig
 
 __all__ = ["ProjectConfig", "build_project_defs"]
@@ -44,14 +46,8 @@ _ACTIVE_RUN_STATUSES = (
 def build_project_defs(cfg: ProjectConfig) -> Definitions:
     """Build per-project job + schedule + manual UI assets."""
 
-    ops = build_ops(cfg)
+    run_op = build_single_op(cfg)
     op_retry = RetryPolicy(max_retries=2, delay=5)
-
-    # Apply retry policy to ops that talk to Plane (most of them).
-    ops_with_retry = {
-        name: op_def.with_retry_policy(op_retry) if hasattr(op_def, "with_retry_policy") else op_def
-        for name, op_def in ops.items()
-    }
 
     job_name = f"{cfg.slug}_run_ready_batch_task"
     schedule_name = f"{cfg.slug}_every_{_cron_label(cfg.schedule_cron)}"
@@ -60,8 +56,8 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
     @job(
         name=job_name,
         description=(
-            f"Drive one ready batch task on '{cfg.slug}' through claim → "
-            f"branch → execute → verify → commit → release. "
+            f"Drive ready batch tasks on '{cfg.slug}' through claim -> "
+            f"execute -> verify -> release -> deliver. "
             f"Lock guarded by Plane state + Dagster active-run check; "
             f"max_runtime={cfg.max_runtime_seconds}s."
         ),
@@ -72,15 +68,7 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
         },
     )
     def run_job():
-        pick = ops_with_retry["pick_ready"]()
-        claimed = ops_with_retry["claim"](pick)
-        worktree = ops_with_retry["ensure_worktree"](claimed)
-        exec_result = ops_with_retry["run_executor"](worktree)
-        verify = ops_with_retry["run_verification"](exec_result)
-        commit = ops_with_retry["commit_push"](verify)
-        pr = ops_with_retry["ensure_pr"](commit)
-        released = ops_with_retry["release"](pr)
-        ops_with_retry["merge_to_main"](released)
+        run_op.with_retry_policy(op_retry)()
 
     @schedule(
         name=schedule_name,
@@ -112,23 +100,28 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
             tags={f"{cfg.slug}/triggered_by": "schedule"},
         )
 
-    status_asset = _make_status_asset(cfg)
-    reset_lease_asset = _make_reset_lease_asset(cfg)
-    list_worktrees_asset = _make_list_worktrees_asset(cfg)
-
     return Definitions(
         jobs=[run_job],
         schedules=[run_schedule],
-        assets=[status_asset, reset_lease_asset, list_worktrees_asset],
+        assets=[
+            _make_status_asset(cfg),
+            _make_reset_lease_asset(cfg),
+            _make_list_worktrees_asset(cfg),
+        ],
     )
 
 
 def _cron_label(cron: str) -> str:
-    """`*/2 * * * *` → `2m`, `*/30 * * * *` → `30m`, fallback → `cron`."""
+    """``*/2 * * * *`` -> ``2m``, ``*/30 * * * *`` -> ``30m``, fallback -> ``cron``."""
     parts = cron.split()
     if len(parts) >= 1 and parts[0].startswith("*/") and parts[0][2:].isdigit():
         return f"{parts[0][2:]}m"
     return "cron"
+
+
+# ---------------------------------------------------------------------------
+# Per-project UI assets
+# ---------------------------------------------------------------------------
 
 
 def _make_status_asset(cfg: ProjectConfig):
@@ -188,7 +181,6 @@ def _make_reset_lease_asset(cfg: ProjectConfig):
 
         client = LivePlaneClient(LivePlaneSettings.from_env())
         api = client.api
-        # Fetch raw issues to read updated_at
         path = (
             f"/api/v1/workspaces/{client.settings.workspace_slug}/projects/"
             f"{client.project_id}/issues/"
