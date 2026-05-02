@@ -1,12 +1,15 @@
 [project]
-name = "dora-orchestrator"
+name = "orchestrator"
 version = "0.1.0"
-description = "Dagster-first orchestration platform for Dora-style autonomous engineering workflows"
+description = "Dagster-first orchestration platform for autonomous engineering workflows"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
 dagster = ["dagster>=1.8"]
 
+[project.scripts]
+orchestrator = "orchestrator.cli:main"
+
 [tool.setuptools.packages.find]
-include = ["dora_orchestrator*"]
+include = ["orchestrator*"]
