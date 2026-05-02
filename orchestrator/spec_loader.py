@@ -19,5 +19,5 @@ def load_project_spec(path: Path) -> ProjectSpec:
                 f"{task_project!r} does not match project {project_slug!r}"
             )
         tasks.append(TaskSpec(project_slug=project_slug, **task_data))
-    return ProjectSpec(project_slug=project_slug, title=data["title"], tasks=tasks)
-
+    modules = list(data.get("modules", []))
+    return ProjectSpec(project_slug=project_slug, title=data["title"], tasks=tasks, modules=modules)

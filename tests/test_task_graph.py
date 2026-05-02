@@ -1,8 +1,8 @@
 import unittest
 from dataclasses import replace
 
-from dora_orchestrator.models import ProjectSpec, TaskSpec
-from dora_orchestrator.task_graph import build_task_graph
+from orchestrator.models import ProjectSpec, TaskSpec
+from orchestrator.task_graph import build_task_graph
 
 
 def task_spec(

@@ -1,6 +1,6 @@
 import unittest
 
-from dora_orchestrator.git_delivery import is_forbidden_orchestration_commit
+from orchestrator.git_delivery import is_forbidden_orchestration_commit
 
 
 class GitDeliveryTest(unittest.TestCase):

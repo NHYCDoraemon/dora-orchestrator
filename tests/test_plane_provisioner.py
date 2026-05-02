@@ -1,9 +1,9 @@
 import unittest
 from dataclasses import replace
 
-from dora_orchestrator.models import ProjectSpec, TaskSpec
-from dora_orchestrator.plane_provisioner import provision_project
-from dora_orchestrator.task_graph import build_task_graph
+from orchestrator.models import ProjectSpec, TaskSpec
+from orchestrator.plane_provisioner import provision_project
+from orchestrator.task_graph import build_task_graph
 
 
 class FakePlaneClient:
@@ -83,3 +83,19 @@ class PlaneProvisionerTest(unittest.TestCase):
         self.assertEqual(len(issue["source_hash"]), 64)
         self.assertEqual(issue["agent_hint"], "noop")
         self.assertEqual(issue["verification_level"], ["L1", "L2"])
+
+    def test_provisions_project_modules_even_without_matching_tasks(self):
+        client = FakePlaneClient()
+        spec = ProjectSpec(
+            project_slug="dora-context",
+            title="Dora Context",
+            tasks=project_spec().tasks,
+            modules=["product", "architecture", "planning"],
+        )
+
+        provision_project(client, build_task_graph(spec))
+
+        self.assertIn(("dora-context", "product"), client.modules)
+        self.assertIn(("dora-context", "architecture"), client.modules)
+        self.assertIn(("dora-context", "planning"), client.modules)
+        self.assertIn(("dora-context", "context"), client.modules)

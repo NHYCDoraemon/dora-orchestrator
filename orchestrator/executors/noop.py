@@ -2,7 +2,7 @@
 
 import json
 
-from dora_orchestrator.executor_protocol import ExecutorResult, TaskRunContext
+from orchestrator.executor_protocol import ExecutorResult, TaskRunContext
 
 
 class NoopExecutor:

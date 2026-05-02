@@ -23,6 +23,7 @@ class ProjectSpec:
     project_slug: str
     title: str
     tasks: list[TaskSpec]
+    modules: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -35,4 +36,3 @@ class CompiledTask:
 class TaskGraph:
     project: ProjectSpec
     tasks: list[CompiledTask]
-

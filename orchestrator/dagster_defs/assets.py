@@ -1,17 +1,26 @@
 """Dagster assets for the initial Dora orchestration graph."""
 
-from pathlib import Path
+import os
+from dataclasses import asdict
 
 from dagster import asset
 
-from dora_orchestrator.plane_provisioner import provision_project
-from dora_orchestrator.spec_loader import load_project_spec
-from dora_orchestrator.task_graph import build_task_graph
+from orchestrator.batch_audit import audit_task_issue_batch
+from orchestrator.batch_submit import submit_task_issue_batch
+from orchestrator.config import load_config
+from orchestrator.plane_backends import create_plane_client
+from orchestrator.plane_provisioner import provision_project
+from orchestrator.run_ready_task import (
+    run_ready_batch_task as run_one_ready_batch_task,
+    run_ready_task as run_one_ready_task,
+)
+from orchestrator.spec_loader import load_project_spec
+from orchestrator.task_graph import build_task_graph
 
 
 @asset
 def project_spec():
-    return load_project_spec(Path("examples/dora.orchestration.json"))
+    return load_project_spec(load_config().spec_path)
 
 
 @asset
@@ -21,27 +30,50 @@ def task_graph(project_spec):
 
 @asset
 def plane_space(task_graph):
-    class DryRunPlaneClient:
-        def __init__(self):
-            self.projects = {}
-            self.cycles = {}
-            self.modules = {}
-            self.issues = {}
+    return provision_project(create_plane_client(load_config()), task_graph)
 
-        def upsert_project(self, slug, title):
-            self.projects[slug] = {"slug": slug, "title": title}
-            return self.projects[slug]
 
-        def upsert_cycle(self, project_slug, name):
-            self.cycles[(project_slug, name)] = {"project_slug": project_slug, "name": name}
-            return self.cycles[(project_slug, name)]
+@asset
+def task_issue_batch_audit():
+    config = load_config()
+    if config.batch_path is None:
+        raise ValueError("ORCHESTRATOR_BATCH_PATH is required for task_issue_batch_audit")
+    return asdict(
+        audit_task_issue_batch(
+            config.batch_path,
+            repo_root=config.target_repo,
+            write_generated=True,
+        )
+    )
 
-        def upsert_module(self, project_slug, name):
-            self.modules[(project_slug, name)] = {"project_slug": project_slug, "name": name}
-            return self.modules[(project_slug, name)]
 
-        def upsert_issue(self, project_slug, external_id, payload):
-            self.issues[(project_slug, external_id)] = dict(payload)
-            return self.issues[(project_slug, external_id)]
+@asset
+def task_issue_batch_submission(task_issue_batch_audit):
+    config = load_config()
+    if task_issue_batch_audit["status"] == "FAIL":
+        raise ValueError("cannot submit batch with failing audit")
+    if config.batch_path is None:
+        raise ValueError("ORCHESTRATOR_BATCH_PATH is required for task_issue_batch_submission")
+    if not config.project_slug or not config.project_title:
+        raise ValueError("ORCHESTRATOR_PROJECT_SLUG and ORCHESTRATOR_PROJECT_TITLE are required for task_issue_batch_submission")
+    return submit_task_issue_batch(
+        config.batch_path,
+        repo_root=config.target_repo,
+        project_slug=config.project_slug,
+        project_title=config.project_title,
+        plane_client=create_plane_client(config),
+    )
 
-    return provision_project(DryRunPlaneClient(), task_graph)
+
+@asset
+def ready_task_run():
+    config = load_config()
+    run_id = os.environ.get("ORCHESTRATOR_RUN_ID", "dagster-dry-run")
+    return run_one_ready_task(config, run_id=run_id)
+
+
+@asset
+def ready_batch_task_run():
+    config = load_config()
+    run_id = os.environ.get("ORCHESTRATOR_RUN_ID", "dagster-dry-run")
+    return run_one_ready_batch_task(config, run_id=run_id)

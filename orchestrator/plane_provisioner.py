@@ -8,7 +8,7 @@ def provision_project(client, graph: TaskGraph) -> dict[str, int]:
     client.upsert_project(project.project_slug, project.title)
 
     cycles: set[str] = set()
-    modules: set[str] = set()
+    modules: set[str] = set(project.modules)
     for compiled in graph.tasks:
         task = compiled.spec
         cycles.add(task.cycle)
@@ -44,4 +44,3 @@ def provision_project(client, graph: TaskGraph) -> dict[str, int]:
         "modules": len(modules),
         "issues": len(graph.tasks),
     }
-
