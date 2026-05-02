@@ -65,6 +65,6 @@ class ProvisionTest(unittest.TestCase):
             self.assertEqual(len(state["issues"]), 2)
             self.assertEqual(
                 state["issues"][0]["value"]["state"],
-                "Backlog",
+                "Todo",
             )
 

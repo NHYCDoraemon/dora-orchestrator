@@ -50,12 +50,13 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             )
 
             result = run_ready_batch_task(config, plane_client=client, run_id="run-1")
+            task_result = result["runs"][0]
 
-        self.assertEqual(result["outcome"], "agent_done")
-        self.assertEqual(result["state"], "Done")
-        self.assertEqual(result["issue"], "DORA-PLN-20260501B-T01")
-        self.assertTrue(result["verification"]["pass"])
-        self.assertFalse(result["verification"]["skipped"])
+        self.assertEqual(task_result["outcome"], "agent_done")
+        self.assertEqual(task_result["state"], "Done")
+        self.assertEqual(task_result["issue"], "DORA-PLN-20260501B-T01")
+        self.assertTrue(task_result["verification"]["pass"])
+        self.assertFalse(task_result["verification"]["skipped"])
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Done")
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-ROOT")]["state"], "Backlog")
 
@@ -73,11 +74,12 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             )
 
             result = run_ready_batch_task(config, plane_client=client, run_id="run-2")
+            task_result = result["runs"][0]
 
-        self.assertEqual(result["outcome"], "agent_unverified")
-        self.assertEqual(result["state"], "Partial")
-        self.assertFalse(result["verification"]["pass"])
-        self.assertEqual(result["verification"]["results"][0]["ok"], False)
+        self.assertEqual(task_result["outcome"], "agent_unverified")
+        self.assertEqual(task_result["state"], "Partial")
+        self.assertFalse(task_result["verification"]["pass"])
+        self.assertEqual(task_result["verification"]["results"][0]["ok"], False)
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Partial")
 
     def test_returns_no_ready_when_only_root_epic_is_open(self):
@@ -97,7 +99,9 @@ class RunReadyBatchTaskTest(unittest.TestCase):
 
             result = run_ready_batch_task(config, plane_client=client, run_id="run-3")
 
-        self.assertEqual(result, {"outcome": "no_ready", "run_id": "run-3"})
+        self.assertEqual(result["outcome"], "no_ready")
+        self.assertEqual(result["run_id"], "run-3")
+        self.assertEqual(result["loop_count"], 1)
 
 
 class RunReadyBatchTaskHonorsFrontmatterTest(unittest.TestCase):
@@ -114,7 +118,7 @@ class RunReadyBatchTaskHonorsFrontmatterTest(unittest.TestCase):
 
             result = run_ready_batch_task(config, plane_client=client, run_id="run-4")
 
-            self.assertEqual(result["outcome"], "agent_done")
+            self.assertEqual(result["runs"][0]["outcome"], "agent_done")
             events = (Path(tmp) / ".dora" / "loop-runs" / "run-4" / "events.ndjson").read_text(encoding="utf-8")
             self.assertIn('"backend": "noop"', events)
 
@@ -133,7 +137,7 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
 
             result = run_ready_batch_task(config, plane_client=client, run_id="run-emit-1")
 
-        self.assertEqual(result["outcome"], "agent_done")
+        self.assertEqual(result["runs"][0]["outcome"], "agent_done")
         markers = [c["marker"] for c in client.comments]
         self.assertIn("dora-loop:claim", markers)
         self.assertIn("dora-loop:verify", markers)
@@ -161,6 +165,65 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
 
         labels = client.issues[("dora", "DORA-PLN-20260501B-T01")].get("labels") or []
         self.assertIn("needs:review", labels)
+
+
+class RunReadyBatchTaskLoopTest(unittest.TestCase):
+    def test_chains_through_multiple_tasks_in_one_call(self):
+        """After T01 completes, T02 should be picked up automatically."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-ROOT", {
+                "name": "Root", "issue_type": "root_epic", "priority": "P1",
+            })
+            client.upsert_issue("dora", "DORA-T01", {
+                "name": "Task 1", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+            client.upsert_issue("dora", "DORA-T02", {
+                "name": "Task 2", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                project_slug="dora",
+            )
+            result = run_ready_batch_task(config, plane_client=client, run_id="chain-1")
+
+            self.assertEqual(result["outcome"], "agent_done")
+            self.assertEqual(result["loop_count"], 2)
+            self.assertEqual(len(result["runs"]), 2)
+            self.assertEqual(result["runs"][0]["external_id"], "DORA-T01")
+            self.assertEqual(result["runs"][1]["external_id"], "DORA-T02")
+            self.assertEqual(client.issues[("dora", "DORA-T01")]["state"], "Done")
+            self.assertEqual(client.issues[("dora", "DORA-T02")]["state"], "Done")
+
+    def test_stops_when_first_task_depends_on_unfinished(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-T01", {
+                "name": "Task 1", "issue_type": "task", "priority": "P3",
+                "depends_on": ["DORA-T02"],
+            })
+            client.upsert_issue("dora", "DORA-T02", {
+                "name": "Task 2", "issue_type": "task", "priority": "P3",
+                "depends_on": ["DORA-T01"],
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                project_slug="dora",
+            )
+            result = run_ready_batch_task(config, plane_client=client, run_id="deadlock-1")
+
+            self.assertEqual(result["outcome"], "no_ready")
+            self.assertEqual(result["loop_count"], 1)
+            self.assertEqual(client.issues[("dora", "DORA-T01")]["state"], "Blocked")
+            self.assertEqual(client.issues[("dora", "DORA-T02")]["state"], "Blocked")
 
 
 if __name__ == "__main__":

@@ -211,7 +211,7 @@ class LivePlaneClient:
                     else:
                         is_stale = True  # no heartbeat ever written → assume stale
 
-            if state_name not in {"Backlog", "Todo", "Partial"} and not is_stale:
+            if state_name not in {"Backlog", "Todo", "Blocked", "Partial"} and not is_stale:
                 continue
 
             deps = _extract_frontmatter_list(issue.get("description_html") or "", "depends_on")
@@ -255,7 +255,9 @@ class LivePlaneClient:
         for attempt in range(max_tries):
             try:
                 updated = self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", payload)
-                return _adapt_issue(updated if isinstance(updated, dict) else issue)
+                result = _adapt_issue(updated if isinstance(updated, dict) else issue)
+                self._refresh_blocked(project_slug)
+                return result
             except RuntimeError as exc:
                 last_exc = exc
                 if attempt < max_tries - 1:
@@ -263,6 +265,60 @@ class LivePlaneClient:
         raise RuntimeError(
             f"release_issue failed after {max_tries} attempts for {external_id}"
         ) from last_exc
+
+    def _refresh_blocked(self, project_slug: str) -> None:
+        """Re-evaluate all issues: Blocked↔Todo based on current Done set."""
+        states = self._states()
+        done = {
+            issue.get("external_id")
+            for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/")
+            if self._state_name(issue.get("state")) in {"Done", "Cancelled"}
+        }
+        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+            external_id = issue.get("external_id") or ""
+            if not external_id or external_id.endswith("-ROOT"):
+                continue
+            current = self._state_name(issue.get("state"))
+            if current in {"In Progress", "Done", "Cancelled", "Partial"}:
+                continue
+            deps = _extract_frontmatter_list(issue.get("description_html") or "", "depends_on")
+            if all(dep in done for dep in deps):
+                if current == "Blocked":
+                    self._transition_issue(issue, states.get("Todo"))
+            else:
+                if current == "Todo":
+                    self._transition_issue(issue, states.get("Blocked"))
+                elif current == "Backlog":
+                    self._transition_issue(issue, states.get("Blocked"))
+
+    def _state_name(self, state_id: object) -> str:
+        """Map a Plane state ID back to its name."""
+        if self._state_by_name is None:
+            self._states()
+        for name, sid in (self._state_by_name or {}).items():
+            if sid == state_id:
+                return name
+        return ""
+
+    def _transition_issue(self, issue: dict[str, Any], target_state_id: object) -> dict[str, Any]:
+        """Move an issue to a new state via PATCH."""
+        if target_state_id is None:
+            return issue
+        try:
+            updated = self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", {"state": target_state_id})
+            self._issues().pop(issue.get("external_id"), None)
+            return updated if isinstance(updated, dict) else issue
+        except RuntimeError:
+            return issue
+
+    def blocked_issues(self, project_slug: str) -> list[dict[str, Any]]:
+        """Return all issues currently in the Blocked state."""
+        self._refresh_blocked(project_slug)
+        result = []
+        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+            if self._state_name(issue.get("state")) == "Blocked":
+                result.append(_adapt_issue(issue))
+        return sorted(result, key=lambda i: i.get("external_id", ""))
 
     def publish_run_report(self, project_slug: str, external_id: str, report: dict[str, Any]) -> dict[str, Any]:
         return self.add_comment(

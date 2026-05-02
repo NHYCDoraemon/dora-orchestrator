@@ -3,6 +3,12 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+READY_STATES = {"Backlog", "Todo", "Blocked", "Partial"}
+
+
+def _deps_satisfied(issue: dict[str, Any], done: set[str]) -> bool:
+    return all(dep in done for dep in issue.get("depends_on", []))
+
 
 @dataclass
 class InMemoryPlaneClient:
@@ -39,31 +45,38 @@ class InMemoryPlaneClient:
         state = existing.get("state", "Backlog")
         assignee = existing.get("assignee")
         issue = dict(payload)
-        issue.update(
-            {
-                "project_slug": project_slug,
-                "external_id": external_id,
-                "key": existing.get("key", external_id),
-                "state": state,
-                "assignee": assignee,
-            }
-        )
+        issue.update({
+            "project_slug": project_slug,
+            "external_id": external_id,
+            "key": existing.get("key", external_id),
+            "state": state,
+            "assignee": assignee,
+        })
+        # For new issues (no existing state), evaluate deps to set Blocked/Todo
+        if not existing:
+            issue["state"] = self._initial_state(project_slug, issue)
         self.issues[(project_slug, external_id)] = issue
         return issue
 
+    def _initial_state(self, project_slug: str, issue: dict[str, Any]) -> str:
+        """Determine initial state for a new issue based on its dependencies."""
+        if issue.get("issue_type") == "root_epic":
+            return "Backlog"
+        done = self._done_set(project_slug)
+        if _deps_satisfied(issue, done):
+            return "Todo"
+        return "Blocked"
+
     def next_ready_issue(self, project_slug: str) -> dict[str, Any] | None:
-        done = {
-            external_id
-            for (slug, external_id), issue in self.issues.items()
-            if slug == project_slug and issue.get("state") == "Done"
-        }
+        self._refresh_blocked(project_slug)
+        done = self._done_set(project_slug)
         candidates = []
         for (slug, external_id), issue in self.issues.items():
-            if slug != project_slug or issue.get("state") not in {"Backlog", "Todo", "Partial"}:
+            if slug != project_slug or issue.get("state") not in READY_STATES:
                 continue
             if issue.get("issue_type") == "root_epic":
                 continue
-            if all(dep in done for dep in issue.get("depends_on", [])):
+            if _deps_satisfied(issue, done):
                 candidates.append((issue.get("priority", ""), external_id, issue))
         candidates.sort(key=lambda item: (item[0], item[1]))
         return candidates[0][2] if candidates else None
@@ -81,6 +94,9 @@ class InMemoryPlaneClient:
         issue = self.issues[(project_slug, external_id)]
         issue["state"] = state
         issue["assignee"] = None
+        # Re-evaluate all issues in the project — a newly Done task
+        # may unblock dependents.
+        self._refresh_blocked(project_slug)
         return issue
 
     def publish_run_report(self, project_slug: str, external_id: str, report: dict[str, Any]) -> dict[str, Any]:
@@ -89,22 +105,8 @@ class InMemoryPlaneClient:
         self.add_comment(project_slug, external_id, str(report), marker="dora-loop:release")
         return payload
 
-    def add_comment(
-        self,
-        project_slug: str,
-        external_id: str,
-        body: str,
-        *,
-        marker: str | None = None,
-        raw_html: bool = False,
-    ) -> dict[str, Any]:
-        entry = {
-            "project_slug": project_slug,
-            "external_id": external_id,
-            "marker": marker,
-            "body": body,
-            "raw_html": raw_html,
-        }
+    def add_comment(self, project_slug: str, external_id: str, body: str, *, marker: str | None = None, raw_html: bool = False) -> dict[str, Any]:
+        entry = {"project_slug": project_slug, "external_id": external_id, "marker": marker, "body": body, "raw_html": raw_html}
         self.comments.append(entry)
         return entry
 
@@ -131,15 +133,7 @@ class InMemoryPlaneClient:
         issue["labels"] = labels
         return issue
 
-    def update_page(
-        self,
-        project_slug: str,
-        slug: str,
-        *,
-        body: str | None = None,
-        title: str | None = None,
-        match_substring: str | None = None,
-    ) -> dict[str, Any]:
+    def update_page(self, project_slug: str, slug: str, *, body: str | None = None, title: str | None = None, match_substring: str | None = None) -> dict[str, Any]:
         page = self.pages.get((project_slug, slug))
         if page is None and match_substring:
             for (proj, _slug), candidate in self.pages.items():
@@ -155,3 +149,38 @@ class InMemoryPlaneClient:
         if title is not None:
             page["title"] = title
         return page
+
+    def blocked_issues(self, project_slug: str) -> list[dict[str, Any]]:
+        """Return all currently blocked issues sorted by external_id."""
+        return sorted(
+            [i for (s, _), i in self.issues.items()
+             if s == project_slug and i.get("state") == "Blocked"],
+            key=lambda i: i.get("external_id", ""),
+        )
+
+    # ── internal helpers ──────────────────────────────────────────
+
+    def _done_set(self, project_slug: str) -> set[str]:
+        return {
+            external_id
+            for (slug, external_id), issue in self.issues.items()
+            if slug == project_slug and issue.get("state") == "Done"
+        }
+
+    def _refresh_blocked(self, project_slug: str) -> None:
+        """Re-evaluate every issue: Blocked↔Todo based on current Done set."""
+        done = self._done_set(project_slug)
+        for (slug, external_id), issue in self.issues.items():
+            if slug != project_slug:
+                continue
+            if issue.get("issue_type") == "root_epic":
+                continue
+            current = issue.get("state", "Backlog")
+            if current in {"In Progress", "Done", "Partial"}:
+                continue
+            if _deps_satisfied(issue, done):
+                if current != "Todo":
+                    issue["state"] = "Todo"
+            else:
+                if current != "Blocked":
+                    issue["state"] = "Blocked"

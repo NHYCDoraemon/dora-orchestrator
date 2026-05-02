@@ -78,6 +78,9 @@ class LocalPlaneClient(InMemoryPlaneClient):
         self._save()
         return result
 
+    def blocked_issues(self, project_slug: str) -> list[dict[str, Any]]:
+        return super().blocked_issues(project_slug)
+
     def _load(self) -> None:
         if not self.state_path.exists():
             return

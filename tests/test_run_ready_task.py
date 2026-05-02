@@ -110,4 +110,4 @@ class RunReadyTaskTest(unittest.TestCase):
 
             self.assertEqual(result["outcome"], "agent_done")
             self.assertEqual(plane.issues[("demo-project", "DEMO-0")]["state"], "Done")
-            self.assertEqual(plane.issues[("demo-project", "DEMO-1")]["state"], "Backlog")
+            self.assertEqual(plane.issues[("demo-project", "DEMO-1")]["state"], "Todo")

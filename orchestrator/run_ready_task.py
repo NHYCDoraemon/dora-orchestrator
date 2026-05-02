@@ -102,19 +102,51 @@ def run_ready_batch_task(
     *,
     plane_client=None,
     run_id: str,
+    max_loops: int = 10,
 ) -> dict[str, object]:
-    """Run the next ready batch-submitted task from Plane.
+    """Run ready batch-submitted tasks in a self-driven loop.
 
-    Unlike `run_ready_task`, this does not load a JSON spec; it picks the next
-    ready Issue (`issue_type == "task"`) from the Plane backend, runs the
-    configured executor, and runs the issue's `verification_commands` before
-    deciding the terminal state.
+    Picks the next ready Issue from Plane, runs it, releases it, then
+    immediately checks for the next ready task. Loops until no more ready
+    tasks or ``max_loops`` iterations are exhausted.
+
+    Unlike `run_ready_task`, this does not load a JSON spec; it picks issues
+    (`issue_type == "task"`) from the Plane backend, runs the configured
+    executor, and runs `verification_commands` before deciding the terminal
+    state.
+
+    Returns a summary dict with ``runs`` (list of per-task results) and
+    ``loop_count``.
     """
     if not config.project_slug:
         raise ValueError("ORCHESTRATOR_PROJECT_SLUG is required for run_ready_batch_task")
     if plane_client is None:
         plane_client = create_plane_client(config)
 
+    runs: list[dict[str, object]] = []
+    loop = 0
+    while loop < max_loops:
+        loop += 1
+        loop_run_id = run_id if loop == 1 else f"{run_id}-{loop}"
+        result = _execute_one_task(config, plane_client, loop_run_id)
+        runs.append(result)
+        if result["outcome"] == "no_ready":
+            break
+
+    return {
+        "outcome": runs[0]["outcome"] if runs else "no_ready",
+        "run_id": run_id,
+        "loop_count": loop,
+        "runs": runs,
+    }
+
+
+def _execute_one_task(
+    config: OrchestratorConfig,
+    plane_client,
+    run_id: str,
+) -> dict[str, object]:
+    """Execute a single ready task: claim → run → verify → release."""
     issue = plane_client.next_ready_issue(config.project_slug)
     if issue is None:
         return {"outcome": "no_ready", "run_id": run_id}
@@ -190,6 +222,7 @@ def run_ready_batch_task(
         "state": terminal_state,
         "run_id": run_id,
         "issue": claimed["key"],
+        "external_id": external_id,
         "event_path": str(artifacts.event_path),
         "verification": verification,
         "touched_files": [str(path) for path in result.touched_files],
@@ -250,9 +283,15 @@ def _refresh_batch_page(plane_client, project_slug: str, batch_id: str) -> None:
 
 
 def _render_batch_prompt(issue: dict) -> str:
-    body = str(issue.get("body") or "")
-    if body:
-        return body if body.endswith("\n") else body + "\n"
+    import re
+    from html import unescape
+
+    # Plane stores the issue body as description_html.
+    raw = str(issue.get("description_html") or issue.get("body") or "")
+    if raw:
+        body = unescape(re.sub(r"<[^>]+>", "", raw)).strip()
+        if body:
+            return body if body.endswith("\n") else body + "\n"
     name = str(issue.get("name") or issue.get("external_id") or "")
     return f"# {name}\n"
 
