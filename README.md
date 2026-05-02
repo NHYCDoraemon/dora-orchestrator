@@ -147,12 +147,12 @@ Once a project is scaffolded and batches are created, the three-step pipeline is
 # Within the project directory — everything auto-discovered:
 cd /path/to/my-project
 orchestrator audit --batch 20260501A --write-generated
-orchestrator approve --batch 20260501A --approved-by raymond
+orchestrator approve --batch 20260501A --approved-by alice
 orchestrator submit --batch 20260501A
 
 # From anywhere using project slug:
 orchestrator audit --project my-project --batch 20260501A --write-generated
-orchestrator approve --project my-project --batch 20260501A --approved-by raymond
+orchestrator approve --project my-project --batch 20260501A --approved-by alice
 orchestrator submit --project my-project --batch 20260501A
 ```
 
@@ -204,8 +204,8 @@ orchestrator submit --project my-project --batch 20260501A
 The older JSON spec path remains a local executor smoke until batch submission and Plane-backed execution are implemented:
 
 ```bash
-export ORCHESTRATOR_SPEC=/Users/raymond/projects/dora-orchestrator/examples/dora.orchestration.json
-export DORA_TARGET_REPO=/Users/raymond/GolandProjects/dora
+export ORCHESTRATOR_SPEC=/path/to/dora-orchestrator/examples/dora.orchestration.json
+export DORA_TARGET_REPO=/path/to/your-project
 export ORCHESTRATOR_EXECUTOR=noop
 export ORCHESTRATOR_PLANE_BACKEND=local
 

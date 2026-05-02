@@ -7,3 +7,5 @@ __pycache__/
 .dora/loop-runs/
 .dagster/
 logs/
+docs/specs/
+CLAUDE.md
