@@ -124,12 +124,16 @@ def run_ready_batch_task(
         plane_client = create_plane_client(config)
 
     runs: list[dict[str, object]] = []
+    attempted_ids: set[str] = set()
     loop = 0
     while loop < max_loops:
         loop += 1
         loop_run_id = run_id if loop == 1 else f"{run_id}-{loop}"
-        result = _execute_one_task(config, plane_client, loop_run_id)
+        result = _execute_one_task(config, plane_client, loop_run_id, attempted_ids)
         runs.append(result)
+        ext_id = result.get("external_id")
+        if ext_id:
+            attempted_ids.add(str(ext_id))
         if result["outcome"] == "no_ready":
             break
 
@@ -145,9 +149,10 @@ def _execute_one_task(
     config: OrchestratorConfig,
     plane_client,
     run_id: str,
+    attempted_ids: set[str] | None = None,
 ) -> dict[str, object]:
     """Execute a single ready task: claim → run → verify → release."""
-    issue = plane_client.next_ready_issue(config.project_slug)
+    issue = plane_client.next_ready_issue(config.project_slug, exclude=attempted_ids or None)
     if issue is None:
         return {"outcome": "no_ready", "run_id": run_id}
 
@@ -190,10 +195,20 @@ def _execute_one_task(
         outcome = "agent_unverified"
     else:
         outcome = result.outcome
-    terminal_state = "Done" if outcome == "agent_done" else "Partial"
+
+    retry_count = _read_retry_count(claimed)
+    if outcome == "agent_done":
+        terminal_state = "Done"
+    elif retry_count >= 3:
+        outcome = "agent_unverified"
+        terminal_state = "Needs Input"
+    else:
+        terminal_state = "Partial"
+        retry_count += 1
+        _write_retry_count(plane_client, config.project_slug, external_id, retry_count)
 
     if outcome != "agent_done" and hasattr(plane_client, "add_label"):
-        label = "needs:review" if outcome == "agent_unverified" else "needs:input"
+        label = "needs:review" if terminal_state == "Partial" else "needs:input"
         plane_client.add_label(config.project_slug, external_id, label)
 
     plane_client.publish_run_report(
@@ -294,6 +309,42 @@ def _render_batch_prompt(issue: dict) -> str:
             return body if body.endswith("\n") else body + "\n"
     name = str(issue.get("name") or issue.get("external_id") or "")
     return f"# {name}\n"
+
+
+MAX_RETRIES = 3
+
+
+def _read_retry_count(issue: dict) -> int:
+    """Read `dora_retry_count` from issue frontmatter or dict key."""
+    if "dora_retry_count" in issue:
+        try:
+            return int(issue["dora_retry_count"])
+        except (ValueError, TypeError):
+            pass
+    html = str(issue.get("description_html") or "")
+    count_str = _extract_frontmatter_value(html, "dora_retry_count")
+    if count_str:
+        try:
+            return int(count_str.strip())
+        except (ValueError, TypeError):
+            pass
+    return 0
+
+
+def _write_retry_count(plane_client, project_slug: str, external_id: str, count: int) -> None:
+    """Persist the retry count to the issue, if the backend supports it."""
+    if hasattr(plane_client, "set_retry_count"):
+        plane_client.set_retry_count(project_slug, external_id, count)
+
+
+def _extract_frontmatter_value(description_html: str, key: str) -> str | None:
+    import re as _re
+    from html import unescape as _unescape
+    text = _unescape(description_html)
+    if "<pre>" in text and "</pre>" in text:
+        text = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
+    m = _re.search(rf"^{key}:\s*(.+)$", text, _re.MULTILINE)
+    return m.group(1).strip() if m else None
 
 
 def _run_verification_commands(commands: list[str], repo_root: Path) -> dict[str, object]:

@@ -67,7 +67,7 @@ class InMemoryPlaneClient:
             return "Todo"
         return "Blocked"
 
-    def next_ready_issue(self, project_slug: str) -> dict[str, Any] | None:
+    def next_ready_issue(self, project_slug: str, *, exclude: set[str] | None = None) -> dict[str, Any] | None:
         self._refresh_blocked(project_slug)
         done = self._done_set(project_slug)
         candidates = []
@@ -75,6 +75,8 @@ class InMemoryPlaneClient:
             if slug != project_slug or issue.get("state") not in READY_STATES:
                 continue
             if issue.get("issue_type") == "root_epic":
+                continue
+            if exclude and external_id in exclude:
                 continue
             if _deps_satisfied(issue, done):
                 candidates.append((issue.get("priority", ""), external_id, issue))
@@ -184,3 +186,8 @@ class InMemoryPlaneClient:
             else:
                 if current != "Blocked":
                     issue["state"] = "Blocked"
+
+    def set_retry_count(self, project_slug: str, external_id: str, count: int) -> None:
+        issue = self.issues.get((project_slug, external_id))
+        if issue is not None:
+            issue["dora_retry_count"] = count

@@ -193,10 +193,11 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             result = run_ready_batch_task(config, plane_client=client, run_id="chain-1")
 
             self.assertEqual(result["outcome"], "agent_done")
-            self.assertEqual(result["loop_count"], 2)
-            self.assertEqual(len(result["runs"]), 2)
+            self.assertEqual(result["loop_count"], 3)
+            self.assertEqual(len(result["runs"]), 3)
             self.assertEqual(result["runs"][0]["external_id"], "DORA-T01")
             self.assertEqual(result["runs"][1]["external_id"], "DORA-T02")
+            self.assertEqual(result["runs"][2]["outcome"], "no_ready")
             self.assertEqual(client.issues[("dora", "DORA-T01")]["state"], "Done")
             self.assertEqual(client.issues[("dora", "DORA-T02")]["state"], "Done")
 

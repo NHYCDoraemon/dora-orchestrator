@@ -162,7 +162,7 @@ class LivePlaneClient:
         self._attach_cycle(issue, payload.get("cycle"))
         return _adapt_issue(issue)
 
-    def next_ready_issue(self, project_slug: str) -> dict[str, Any] | None:
+    def next_ready_issue(self, project_slug: str, *, exclude: set[str] | None = None) -> dict[str, Any] | None:
         states = {item["id"]: item["name"] for item in self.api.paginate_v1(f"{self.proj_v1}/states/")}
         done = {
             issue.get("external_id")
@@ -182,6 +182,8 @@ class LivePlaneClient:
                 continue
             # Root Epics are batch anchors, never directly executable.
             if external_id.endswith("-ROOT"):
+                continue
+            if exclude and external_id in exclude:
                 continue
 
             # Stale lock detection: an "In Progress" issue whose heartbeat
@@ -267,7 +269,7 @@ class LivePlaneClient:
         ) from last_exc
 
     def _refresh_blocked(self, project_slug: str) -> None:
-        """Re-evaluate all issues: Blocked↔Todo based on current Done set."""
+        """Re-evaluate all non-terminal issues: Todo if deps met, Blocked otherwise."""
         states = self._states()
         done = {
             issue.get("external_id")
@@ -283,12 +285,10 @@ class LivePlaneClient:
                 continue
             deps = _extract_frontmatter_list(issue.get("description_html") or "", "depends_on")
             if all(dep in done for dep in deps):
-                if current == "Blocked":
+                if current != "Todo":
                     self._transition_issue(issue, states.get("Todo"))
             else:
-                if current == "Todo":
-                    self._transition_issue(issue, states.get("Blocked"))
-                elif current == "Backlog":
+                if current != "Blocked":
                     self._transition_issue(issue, states.get("Blocked"))
 
     def _state_name(self, state_id: object) -> str:
@@ -380,6 +380,18 @@ class LivePlaneClient:
         issue["labels"] = current
         return _adapt_issue(issue)
 
+    def set_retry_count(self, project_slug: str, external_id: str, count: int) -> None:
+        """Store `dora_retry_count` in the issue's frontmatter."""
+        issue = self._resolve_issue(external_id)
+        desc = str(issue.get("description_html") or "")
+        import re as _re
+        if "dora_retry_count:" in desc:
+            desc = _re.sub(r"dora_retry_count:\s*\d+", f"dora_retry_count: {count}", desc)
+        else:
+            desc = desc.replace("---\n", f"---\ndora_retry_count: {count}\n", 1)
+        self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", {"description_html": desc})
+        self._issue_by_external_id = None
+
     def _resolve_issue_full(self, external_id: str) -> dict[str, Any]:
         """Like _resolve_issue but ensures fields like `labels` are populated.
 
@@ -457,12 +469,30 @@ class LivePlaneClient:
 
     def _issue_payload(self, external_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = _issue_markdown(external_id, payload)
+        state_id = self._states().get("Backlog")
+        issue_type = str(payload.get("issue_type") or "")
+        if issue_type == "root_epic":
+            state_id = self._states().get("Backlog")
+        else:
+            deps = list(payload.get("depends_on") or [])
+            if deps:
+                done = {
+                    issue.get("external_id")
+                    for issue in self._issues().values()
+                    if self._state_name(issue.get("state")) in {"Done", "Cancelled"}
+                }
+                if all(dep in done for dep in deps):
+                    state_id = self._states().get("Todo")
+                else:
+                    state_id = self._states().get("Blocked")
+            else:
+                state_id = self._states().get("Todo")
         out = {
             "name": payload.get("name") or payload.get("title") or external_id,
             "description_html": _markdown_to_html(body),
             "external_id": external_id,
             "external_source": "dora-orchestrator",
-            "state": self._states().get("Backlog"),
+            "state": state_id,
             "priority": _map_priority(str(payload.get("priority", ""))),
         }
         parent_external_id = payload.get("parent_external_id")
