@@ -34,6 +34,13 @@ RC_HARD_TIMEOUT = -98
 # the process group.
 _ORPHAN_GRACE_SECONDS = 30
 
+# Heartbeat cadence — emit "still waiting on agent stdout, idle for Ns" every
+# N seconds to on_line (Dagster UI) AND to the events.ndjson sink so the
+# operator and post-mortem tooling can both see that the orchestrator is
+# still alive while waiting on a slow agent. 60 s strikes a balance between
+# noise and latency.
+_HEARTBEAT_INTERVAL_SECONDS = 60
+
 
 class ClaudeExecutor:
     def build_command(self, context: TaskRunContext) -> list[str]:
@@ -88,7 +95,7 @@ class ClaudeExecutor:
 def _classify_outcome(
     rc: int,
     event_path,
-    idle_timeout_seconds: int = 600,
+    idle_timeout_seconds: int = 1800,
     hard_timeout_seconds: int = 3600,
 ) -> tuple[str, str]:
     """Derive outcome and summary from exit code and the last result event.
@@ -193,7 +200,7 @@ def _stream_subprocess(
     event_path,
     on_line,
     stdin_text=None,
-    idle_timeout_seconds=600,
+    idle_timeout_seconds=1800,
     hard_timeout_seconds=None,
     orphan_grace_seconds=_ORPHAN_GRACE_SECONDS,
 ):
@@ -245,6 +252,7 @@ def _stream_subprocess(
 
     start_time = time.monotonic()
     last_output_at = start_time
+    last_heartbeat_at = start_time
     final_rc: int | None = None
 
     try:
@@ -272,8 +280,32 @@ def _stream_subprocess(
                             break
                         continue
 
+                    # Heartbeat — surface "agent is silent but orchestrator
+                    # is still watching" so Dagster UI / post-mortem tooling
+                    # don't think the orchestrator itself is hung. Emitted
+                    # to BOTH on_line (live UI) and events.ndjson (sink).
+                    idle_for = now - last_output_at
+                    if idle_for >= _HEARTBEAT_INTERVAL_SECONDS and (now - last_heartbeat_at) >= _HEARTBEAT_INTERVAL_SECONDS:
+                        hb = {
+                            "type": "orchestrator",
+                            "subtype": "heartbeat",
+                            "idle_for_seconds": round(idle_for, 1),
+                            "idle_timeout_seconds": idle_timeout_seconds,
+                            "ts": time.time(),
+                        }
+                        hb_line = json.dumps(hb)
+                        sink.write(hb_line + "\n")
+                        sink.flush()
+                        if on_line is not None:
+                            try:
+                                on_line(f"[heartbeat] agent silent {int(idle_for)}s "
+                                        f"(timeout at {idle_timeout_seconds}s)")
+                            except Exception:  # pragma: no cover
+                                pass
+                        last_heartbeat_at = now
+
                     # Process alive but no output for too long.
-                    if (now - last_output_at) > idle_timeout_seconds:
+                    if idle_for > idle_timeout_seconds:
                         _kill_process_group(proc)
                         final_rc = RC_IDLE_TIMEOUT
                         break

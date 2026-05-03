@@ -20,7 +20,7 @@ class TaskRunContext:
     permission_mode: str = "default"
     # Subprocess watchdog: if no stdout line appears for this many seconds the
     # process group is killed and the outcome is `agent_idle_timeout`.
-    idle_timeout_seconds: int = 600
+    idle_timeout_seconds: int = 1800
     # Hard wall clock: if the subprocess hasn't exited after this many seconds
     # the process group is killed and the outcome is `agent_hard_timeout`.
     hard_timeout_seconds: int = 3600
