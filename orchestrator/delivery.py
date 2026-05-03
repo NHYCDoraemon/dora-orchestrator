@@ -238,10 +238,18 @@ def ensure_worktree(
                     cwd=str(worktree_path),
                     capture_output=True, text=True, check=False,
                 )
-                raise RuntimeError(
-                    f"stale-base refresh conflict in {branch}; "
-                    f"resolve manually:\n{merge.stderr.strip()[:600]}"
-                )
+                if auto_clean:
+                    # Automation path: conflict means branch diverged from
+                    # main. Force-reset to base_branch — prior commits
+                    # were already pushed/merged or are stale.
+                    _git(worktree_path, "reset", "--hard", base_branch, check=True)
+                    _git(worktree_path, "clean", "-fd", check=True)
+                else:
+                    raise RuntimeError(
+                        f"stale-base refresh conflict in {branch}; "
+                        f"resolve manually or use --auto-clean:\n"
+                        f"{merge.stderr.strip()[:600]}"
+                    )
             refreshed = True
 
     return created, refreshed
