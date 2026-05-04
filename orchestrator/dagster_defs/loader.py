@@ -75,4 +75,5 @@ def _parse_config_file(path: Path) -> ProjectConfig:
         worktree_root=worktree_root,
         enable_push=bool(data.get("enable_push") or False),
         enable_pr=bool(data.get("enable_pr") or False),
+        qa_enabled=bool(data.get("qa_enabled") or False),
     )

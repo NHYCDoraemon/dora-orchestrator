@@ -100,7 +100,7 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
             tags={f"{cfg.slug}/triggered_by": "schedule"},
         )
 
-    return Definitions(
+    base_defs = Definitions(
         jobs=[run_job],
         schedules=[run_schedule],
         assets=[
@@ -109,6 +109,12 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
             _make_list_worktrees_asset(cfg),
         ],
     )
+
+    if cfg.qa_enabled:
+        from .qa import build_qa_definitions
+
+        return Definitions.merge(base_defs, build_qa_definitions(cfg))
+    return base_defs
 
 
 def _cron_label(cron: str) -> str:

@@ -31,3 +31,4 @@ class ProjectConfig:
     )
     enable_push: bool = False
     enable_pr: bool = False
+    qa_enabled: bool = False
