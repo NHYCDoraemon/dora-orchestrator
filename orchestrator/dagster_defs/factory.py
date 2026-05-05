@@ -78,7 +78,8 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
         default_status=DefaultScheduleStatus.STOPPED,
         description=(
             f"Every {cfg.schedule_cron}: skip if any active run for "
-            f"{job_name} exists; otherwise launch one."
+            f"{job_name} exists OR if Plane has no ready issue; otherwise "
+            f"launch one."
         ),
     )
     def run_schedule(context: ScheduleEvaluationContext):
@@ -95,9 +96,29 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
                 f"{job_name} has an active run (id={run.run_id[:8]}, "
                 f"status={run.status.value}); skip this tick."
             )
+        # Probe Plane before firing. The job inside the run would also
+        # bail with no_ready, but each empty Dagster run still spawns a
+        # code-server subprocess and burns the operator's prompt cache
+        # window. When all batches are Done the schedule must be
+        # genuinely silent — not "fires every tick and bails internally".
+        ready_id = _probe_next_ready(cfg)
+        if ready_id is None:
+            return SkipReason(
+                f"{cfg.slug}: no ready issue in Plane; skip empty run."
+            )
+        if ready_id == "_probe_failed":
+            # Plane unreachable / config missing → don't fire (would just
+            # crash the same way inside the op) and don't loud-fail the
+            # schedule (would page the operator on a transient outage).
+            return SkipReason(
+                f"{cfg.slug}: plane probe failed; skip until next tick."
+            )
         return RunRequest(
             run_key=None,
-            tags={f"{cfg.slug}/triggered_by": "schedule"},
+            tags={
+                f"{cfg.slug}/triggered_by": "schedule",
+                f"{cfg.slug}/probe_ready_id": str(ready_id),
+            },
         )
 
     base_defs = Definitions(
@@ -115,6 +136,27 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
 
         return Definitions.merge(base_defs, build_qa_definitions(cfg))
     return base_defs
+
+
+def _probe_next_ready(cfg: ProjectConfig) -> str | None:
+    """Best-effort Plane probe used by the schedule to skip empty ticks.
+
+    Returns the ``external_id`` of the next ready issue, ``None`` when
+    Plane returned an empty queue, or the sentinel string
+    ``"_probe_failed"`` when the probe could not run (Plane unreachable,
+    settings incomplete, transport error). Probing failure is intentionally
+    NOT raised: a transient Plane outage should silently skip the tick,
+    not fail-loud the schedule and page the operator.
+    """
+    try:
+        from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
+        client = LivePlaneClient(LivePlaneSettings.from_env())
+        ready = client.next_ready_issue(cfg.slug)
+    except Exception:
+        return "_probe_failed"
+    if ready is None:
+        return None
+    return str(ready.get("external_id", "")) or "_probe_failed"
 
 
 def _cron_label(cron: str) -> str:

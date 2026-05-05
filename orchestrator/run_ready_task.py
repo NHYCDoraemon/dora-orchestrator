@@ -110,6 +110,7 @@ def run_ready_batch_task(
     plane_client=None,
     run_id: str,
     max_loops: int = 10,
+    max_no_progress_streak: int = 2,
     delivery: DeliveryConfig | None = None,
     on_progress: Callable[[str, dict], None] | None = None,
 ) -> dict[str, object]:
@@ -117,7 +118,18 @@ def run_ready_batch_task(
 
     Picks the next ready Issue from Plane, runs it, releases it, then
     immediately checks for the next ready task. Loops until no more ready
-    tasks or ``max_loops`` iterations are exhausted.
+    tasks, ``max_loops`` iterations are exhausted, OR the circuit-breaker
+    trips on ``max_no_progress_streak`` consecutive zero-progress runs
+    (last line of defence against the 2026-05-05 runaway: a single
+    Dagster run claiming the same broken task and re-feeding it to claude
+    up to max_loops times).
+
+    A "zero-progress" iteration is one where the executor returned
+    something other than ``agent_done`` AND no commit landed via the
+    delivery pipeline. The streak resets on any successful or commit-
+    producing iteration, so genuinely partial-but-progressing runs
+    (e.g. agent_done on task A, agent_idle_timeout on task B with a
+    half-finished commit) keep going.
 
     Unlike `run_ready_task`, this does not load a JSON spec; it picks issues
     (`issue_type == "task"`) from the Plane backend, runs the configured
@@ -127,8 +139,8 @@ def run_ready_batch_task(
     If *delivery* is provided, each task also goes through the git delivery
     pipeline (worktree, commit, push, PR, merge) after release.
 
-    Returns a summary dict with ``runs`` (list of per-task results) and
-    ``loop_count``.
+    Returns a summary dict with ``runs`` (list of per-task results),
+    ``loop_count``, and (when tripped) ``circuit_breaker_open``.
     """
     if not config.project_slug:
         raise ValueError("ORCHESTRATOR_PROJECT_SLUG is required for run_ready_batch_task")
@@ -143,6 +155,8 @@ def run_ready_batch_task(
     runs: list[dict[str, object]] = []
     attempted_ids: set[str] = set()
     loop = 0
+    no_progress_streak = 0
+    circuit_breaker_open = False
     while loop < max_loops:
         loop += 1
         loop_run_id = run_id if loop == 1 else f"{run_id}-{loop}"
@@ -151,15 +165,41 @@ def run_ready_batch_task(
         ext_id = result.get("external_id")
         if ext_id:
             attempted_ids.add(str(ext_id))
-        if result["outcome"] == "no_ready":
+        outcome = str(result.get("outcome", ""))
+        if outcome == "no_ready":
             break
 
-    return {
+        # Circuit breaker: a "zero-progress" iteration is one where the
+        # executor produced no commit AND did not return agent_done.
+        # Examples: agent_idle_timeout with no commits, agent_unverified,
+        # agent_err:N, repeated stale-reclaim of the same broken task.
+        # Reset the streak on any commit-producing or agent_done run.
+        commit_sha = str(result.get("commit_sha") or "")
+        produced_commit = bool(commit_sha)
+        is_progress = outcome == "agent_done" or produced_commit
+        if is_progress:
+            no_progress_streak = 0
+        else:
+            no_progress_streak += 1
+            if no_progress_streak >= max_no_progress_streak:
+                circuit_breaker_open = True
+                if on_progress:
+                    on_progress("circuit_breaker_open", {
+                        "streak": no_progress_streak,
+                        "last_outcome": outcome,
+                        "last_external_id": str(ext_id or ""),
+                    })
+                break
+
+    summary = {
         "outcome": runs[0]["outcome"] if runs else "no_ready",
         "run_id": run_id,
         "loop_count": loop,
         "runs": runs,
     }
+    if circuit_breaker_open:
+        summary["circuit_breaker_open"] = True
+    return summary
 
 
 def _execute_one_task(

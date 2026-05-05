@@ -166,5 +166,83 @@ class HelpersTest(unittest.TestCase):
         self.assertEqual(_extract_batch_id("a-b-c-d"), "c")
 
 
+class ProbeNextReadyTest(unittest.TestCase):
+    """The schedule probe must skip empty Plane queues silently and never
+    raise on transient Plane outages — both are conditions that should
+    NOT spawn an empty Dagster run."""
+
+    def setUp(self):
+        if importlib.util.find_spec("dagster") is None:
+            self.skipTest("dagster not installed")
+
+    def _cfg(self):
+        from orchestrator.dagster_defs import ProjectConfig
+        return ProjectConfig(slug="probe_test", title="Probe", repo_root=Path("/tmp/probe"))
+
+    def test_probe_returns_id_when_plane_has_ready(self):
+        from unittest.mock import patch
+        from orchestrator.dagster_defs import factory
+
+        fake = type("F", (), {"next_ready_issue": lambda self, slug: {"external_id": "DOR-X-20260101A-T01"}})()
+        with patch.object(factory, "LivePlaneClient", create=True, return_value=fake), \
+             patch.object(factory, "LivePlaneSettings", create=True):
+            # Force the import path through the function (it imports lazily)
+            import sys
+            stub = sys.modules.get("orchestrator.plane_live")
+            try:
+                # Inject our fake into the lazy-imported module attrs.
+                import types as _types
+                fake_module = _types.SimpleNamespace(
+                    LivePlaneClient=lambda settings: fake,
+                    LivePlaneSettings=_types.SimpleNamespace(from_env=lambda: None),
+                )
+                sys.modules["orchestrator.plane_live"] = fake_module
+                self.assertEqual(factory._probe_next_ready(self._cfg()), "DOR-X-20260101A-T01")
+            finally:
+                if stub is not None:
+                    sys.modules["orchestrator.plane_live"] = stub
+                else:
+                    sys.modules.pop("orchestrator.plane_live", None)
+
+    def test_probe_returns_none_when_plane_empty(self):
+        import sys, types as _types
+        from orchestrator.dagster_defs import factory
+
+        fake_module = _types.SimpleNamespace(
+            LivePlaneClient=lambda settings: _types.SimpleNamespace(next_ready_issue=lambda slug: None),
+            LivePlaneSettings=_types.SimpleNamespace(from_env=lambda: None),
+        )
+        stub = sys.modules.get("orchestrator.plane_live")
+        sys.modules["orchestrator.plane_live"] = fake_module
+        try:
+            self.assertIsNone(factory._probe_next_ready(self._cfg()))
+        finally:
+            if stub is not None:
+                sys.modules["orchestrator.plane_live"] = stub
+            else:
+                sys.modules.pop("orchestrator.plane_live", None)
+
+    def test_probe_returns_failed_sentinel_on_exception(self):
+        import sys, types as _types
+        from orchestrator.dagster_defs import factory
+
+        def boom(settings):
+            raise RuntimeError("plane down")
+
+        fake_module = _types.SimpleNamespace(
+            LivePlaneClient=boom,
+            LivePlaneSettings=_types.SimpleNamespace(from_env=lambda: None),
+        )
+        stub = sys.modules.get("orchestrator.plane_live")
+        sys.modules["orchestrator.plane_live"] = fake_module
+        try:
+            self.assertEqual(factory._probe_next_ready(self._cfg()), "_probe_failed")
+        finally:
+            if stub is not None:
+                sys.modules["orchestrator.plane_live"] = stub
+            else:
+                sys.modules.pop("orchestrator.plane_live", None)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -186,18 +186,32 @@ class LivePlaneClient:
             if exclude and external_id in exclude:
                 continue
 
-            # Stale lock detection: an "In Progress" issue whose heartbeat
-            # is older than stale_lock_timeout_seconds is reclaimable.
-            # Never reclaim when the current agent already holds the lock
-            # (heartbeat may simply not have been refreshed yet by a recent claim).
+            # Stale lock detection (defensive — see docs/audit/orchestrator-runaway):
+            # ONLY reclaim when ALL of these hold:
+            #   1. State is "In Progress"
+            #   2. The assignee set contains our own agent_uuid (i.e. the
+            #      stuck claim is one we made and crashed mid-run)
+            #   3. A parseable heartbeat exists AND its age exceeds
+            #      stale_lock_timeout_seconds
+            #
+            # The aggressive "no heartbeat = stale" / "unparseable = stale"
+            # / "different agent = stale" rules were the root cause of the
+            # 2026-05-05 runaway: any issue moved to In Progress by a human
+            # operator, a different agent, or a pre-heartbeat legacy claim
+            # got reclaimed every 2 minutes and re-fed to claude forever
+            # even when all batches were Done. Reclaim must be evidence-
+            # based, not assumption-based.
             is_stale = False
             if state_name == "In Progress":
                 assignees = issue.get("assignees") or []
-                if self.settings.agent_uuid and self.settings.agent_uuid in assignees:
-                    is_stale = False  # we hold the lock, don't reclaim
-                else:
+                own_lock = bool(
+                    self.settings.agent_uuid
+                    and self.settings.agent_uuid in assignees
+                )
+                if own_lock:
                     heartbeat = _extract_frontmatter_value(
-                        issue.get("description_html") or "", "runtime_lock_heartbeat"
+                        issue.get("description_html") or "",
+                        "runtime_lock_heartbeat",
                     )
                     if heartbeat:
                         try:
@@ -209,9 +223,11 @@ class LivePlaneClient:
                             if age > stale_timeout:
                                 is_stale = True
                         except (ValueError, TypeError):
-                            is_stale = True  # unparseable heartbeat → assume stale
-                    else:
-                        is_stale = True  # no heartbeat ever written → assume stale
+                            # Unparseable heartbeat — log nothing here
+                            # (next_ready_issue is hot path), refuse to
+                            # reclaim. Operator must repair metadata
+                            # manually if the issue is genuinely stuck.
+                            is_stale = False
 
             if state_name not in {"Backlog", "Todo", "Blocked", "Partial"} and not is_stale:
                 continue
@@ -245,6 +261,7 @@ class LivePlaneClient:
         updated = self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", payload)
         # Tag with run label so we can recover if this run crashes.
         self.add_label(project_slug, external_id, _run_label(run_id))
+        self._refresh_root_epics(project_slug)
         return _adapt_issue(updated if isinstance(updated, dict) else issue)
 
     def release_issue(self, project_slug: str, external_id: str, state: str) -> dict[str, Any]:
@@ -262,6 +279,7 @@ class LivePlaneClient:
                 updated = self.api.v1("PATCH", f"{self.proj_v1}/issues/{issue['id']}/", payload)
                 result = _adapt_issue(updated if isinstance(updated, dict) else issue)
                 self._refresh_blocked(project_slug)
+                self._refresh_root_epics(project_slug)
                 return result
             except RuntimeError as exc:
                 last_exc = exc
@@ -270,6 +288,47 @@ class LivePlaneClient:
         raise RuntimeError(
             f"release_issue failed after {max_tries} attempts for {external_id}"
         ) from last_exc
+
+    def _refresh_root_epics(self, project_slug: str) -> None:
+        """Roll up every ROOT epic's state from its direct children.
+
+        - all children Done/Cancelled               → ROOT Done
+        - any child In Progress/Partial             → ROOT In Progress
+        - any child Done/Cancelled (some not yet)   → ROOT In Progress
+        - otherwise (all Backlog/Todo/Blocked)      → ROOT Backlog
+        """
+        states = self._states()
+        issues = list(self.api.paginate_v1(f"{self.proj_v1}/issues/"))
+        by_id: dict[str, dict[str, Any]] = {}
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for i in issues:
+            iid = i.get("id")
+            if iid:
+                by_id[iid] = i
+            parent = i.get("parent")
+            if parent:
+                children_by_parent.setdefault(parent, []).append(i)
+        for parent_id, children in children_by_parent.items():
+            parent = by_id.get(parent_id)
+            if not parent:
+                continue
+            ext = parent.get("external_id") or ""
+            if not ext.endswith("-ROOT"):
+                continue
+            statuses = [self._state_name(c.get("state")) for c in children]
+            if all(s in {"Done", "Cancelled"} for s in statuses):
+                target_id = states.get("Done")
+            elif any(s in {"In Progress", "Partial", "Done", "Cancelled"} for s in statuses):
+                target_id = states.get("In Progress")
+            else:
+                target_id = states.get("Backlog")
+            if not target_id or parent.get("state") == target_id:
+                continue
+            try:
+                self.api.v1("PATCH", f"{self.proj_v1}/issues/{parent['id']}/", {"state": target_id})
+            except RuntimeError:
+                continue
+            self._issue_by_external_id = None
 
     def _refresh_blocked(self, project_slug: str) -> None:
         """Re-evaluate all non-terminal issues: Todo if deps met, Blocked otherwise."""

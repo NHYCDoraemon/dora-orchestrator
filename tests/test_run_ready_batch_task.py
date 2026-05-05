@@ -58,7 +58,8 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertTrue(task_result["verification"]["pass"])
         self.assertFalse(task_result["verification"]["skipped"])
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Done")
-        self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-ROOT")]["state"], "Backlog")
+        # ROOT rolls up from its sole child: all-Done → Done.
+        self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-ROOT")]["state"], "Done")
 
     def test_failing_verification_command_marks_partial_and_unverified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,6 +226,112 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             self.assertEqual(result["loop_count"], 1)
             self.assertEqual(client.issues[("dora", "DORA-T01")]["state"], "Blocked")
             self.assertEqual(client.issues[("dora", "DORA-T02")]["state"], "Blocked")
+
+
+class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
+    """The 2026-05-05 runaway needs a last line of defence: even if the
+    schedule probe (Fix #1) and stale-lock policy (Fix #2) both miss a
+    pathological task, a single Dagster run must not feed claude up to
+    max_loops=10 times on the same broken issue. Cap zero-progress streak."""
+
+    def test_circuit_breaker_opens_after_two_consecutive_no_progress(self):
+        """Two iterations in a row with no agent_done and no commit →
+        run aborts at loop 2 instead of running to max_loops. Uses two
+        distinct failing tasks because the in-process exclude list would
+        otherwise short-circuit iter 2 with no_ready before the breaker
+        had a chance to count it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-T01", {
+                "name": "Fails-1", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+                "verification_commands": ["test -f /definitely/not/here/marker"],
+            })
+            client.upsert_issue("dora", "DORA-T02", {
+                "name": "Fails-2", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+                "verification_commands": ["test -f /definitely/not/there/either"],
+            })
+            client.upsert_issue("dora", "DORA-T03", {
+                "name": "Should-never-run", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                project_slug="dora",
+            )
+            events: list[tuple[str, dict]] = []
+            result = run_ready_batch_task(
+                config, plane_client=client, run_id="cb-1",
+                on_progress=lambda e, d: events.append((e, d)),
+            )
+
+            # Without the breaker, T03 would also be picked up after the
+            # two failing ones. With the breaker (default 2) the run aborts
+            # at loop 2 and T03 is never touched.
+            self.assertTrue(result.get("circuit_breaker_open"), "breaker must trip")
+            self.assertEqual(result["loop_count"], 2)
+            self.assertEqual(len(result["runs"]), 2)
+            # T03 must have been left alone — proves the breaker stopped
+            # claude from being launched for further work.
+            self.assertNotEqual(client.issues[("dora", "DORA-T03")]["state"], "Done")
+            # An on_progress event was emitted so the operator can spot it.
+            kinds = [e for e, _ in events]
+            self.assertIn("circuit_breaker_open", kinds)
+
+    def test_circuit_breaker_does_not_open_on_happy_path(self):
+        """Two agent_done iterations followed by no_ready must NOT trip
+        the breaker — happy path stays clean."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-T01", {
+                "name": "T1", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+            client.upsert_issue("dora", "DORA-T02", {
+                "name": "T2", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                project_slug="dora",
+            )
+            result = run_ready_batch_task(config, plane_client=client, run_id="cb-2")
+
+            self.assertNotIn("circuit_breaker_open", result)
+            self.assertEqual(result["loop_count"], 3)  # T01, T02, no_ready
+            self.assertEqual(result["outcome"], "agent_done")
+
+    def test_circuit_breaker_threshold_is_configurable(self):
+        """max_no_progress_streak=1 means the breaker trips on the
+        first failure — useful for super-defensive ops modes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-T01", {
+                "name": "Fail-1", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+                "verification_commands": ["test -f /definitely/not/here"],
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                project_slug="dora",
+            )
+            result = run_ready_batch_task(
+                config, plane_client=client, run_id="cb-3",
+                max_no_progress_streak=1,
+            )
+
+            self.assertTrue(result["circuit_breaker_open"])
+            self.assertEqual(result["loop_count"], 1)
 
 
 if __name__ == "__main__":

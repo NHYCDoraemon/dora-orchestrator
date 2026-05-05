@@ -163,6 +163,152 @@ class LivePlaneClientTest(unittest.TestCase):
         # urgent < medium < low (priority rank), Root Epic excluded entirely.
         self.assertEqual(ready["external_id"], "DORA-AGCORE-20260501C-T03")
 
+    def test_in_progress_held_by_other_agent_is_not_reclaimed(self):
+        """Defensive stale-lock policy: an issue assigned to a different
+        agent_uuid (or unassigned) is NEVER reclaimed, no matter the
+        heartbeat state. Pre-fix this was the chief cause of the 2026-05-05
+        runaway — every tick reclaimed someone else's stuck issue and
+        re-fed it to claude."""
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-backlog", "name": "Backlog"},
+                {"id": "state-in-progress", "name": "In Progress"},
+            ],
+            issues=[
+                {
+                    "id": "issue-stuck",
+                    "external_id": "DORA-X-20260505A-T01",
+                    "state": "state-in-progress",
+                    "priority": "urgent",
+                    "assignees": ["someone-else-uuid"],  # not us
+                    "description_html": "",  # no heartbeat — pre-fix this triggered reclaim
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+                agent_uuid="our-agent-uuid",
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+        self.assertIsNone(ready, "issue held by another agent must NOT be reclaimed")
+
+    def test_in_progress_unassigned_with_no_heartbeat_is_not_reclaimed(self):
+        """An issue moved to In Progress by a human (no assignees, no
+        heartbeat) is NOT reclaimable. Pre-fix this would have been
+        treated as stale and stolen back."""
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-in-progress", "name": "In Progress"},
+            ],
+            issues=[
+                {
+                    "id": "issue-human-moved",
+                    "external_id": "DORA-X-20260505A-T02",
+                    "state": "state-in-progress",
+                    "priority": "high",
+                    "assignees": [],
+                    "description_html": "",
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+                agent_uuid="our-agent-uuid",
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+        self.assertIsNone(ready)
+
+    def test_in_progress_own_lock_with_stale_heartbeat_IS_reclaimed(self):
+        """The legitimate reclaim case: WE held the lock, our run died,
+        heartbeat is older than stale_lock_timeout_seconds. This must
+        still work — it's the only way a crashed agent recovers."""
+        from datetime import datetime, timezone, timedelta
+
+        ancient = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-in-progress", "name": "In Progress"},
+            ],
+            issues=[
+                {
+                    "id": "issue-our-crash",
+                    "external_id": "DORA-X-20260505A-T03",
+                    "state": "state-in-progress",
+                    "priority": "urgent",
+                    "assignees": ["our-agent-uuid"],
+                    "description_html": (
+                        f"<pre>runtime_lock_heartbeat: {ancient}</pre>"
+                    ),
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+                agent_uuid="our-agent-uuid",
+                stale_lock_timeout_seconds=600,  # 10 min
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+        self.assertIsNotNone(ready, "our own crashed claim with stale heartbeat must reclaim")
+        self.assertEqual(ready["external_id"], "DORA-X-20260505A-T03")
+        self.assertTrue(ready.get("_stale_reclaim"))
+
+    def test_in_progress_own_lock_with_unparseable_heartbeat_is_not_reclaimed(self):
+        """Even our own claim — if heartbeat is corrupted, refuse to
+        reclaim. Pre-fix this triggered reclaim on the assumption 'no
+        valid heartbeat = stale', which is unsafe (corruption could be
+        from concurrent writes, partial render, etc)."""
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-in-progress", "name": "In Progress"},
+            ],
+            issues=[
+                {
+                    "id": "issue-corrupted-hb",
+                    "external_id": "DORA-X-20260505A-T04",
+                    "state": "state-in-progress",
+                    "priority": "urgent",
+                    "assignees": ["our-agent-uuid"],
+                    "description_html": (
+                        "<pre>runtime_lock_heartbeat: not-a-real-timestamp</pre>"
+                    ),
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+                agent_uuid="our-agent-uuid",
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+        self.assertIsNone(ready, "corrupted heartbeat is not evidence of stale lock")
+
     def test_pages_require_session_credentials(self):
         client = LivePlaneClient(
             LivePlaneSettings(
