@@ -382,6 +382,65 @@ class LivePlaneClient:
                 result.append(_adapt_issue(issue))
         return sorted(result, key=lambda i: i.get("external_id", ""))
 
+    def state_counts(self, project_slug: str) -> dict[str, int]:
+        """Return {state_name: count} for all issues in this project."""
+        states = {item["id"]: item["name"] for item in self.api.paginate_v1(f"{self.proj_v1}/states/")}
+        counts: dict[str, int] = {}
+        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+            name = states.get(issue.get("state")) or "Unknown"
+            counts[name] = counts.get(name, 0) + 1
+        return counts
+
+    def query_issues(
+        self,
+        project_slug: str,
+        *,
+        states: list[str] | None = None,
+        modules: list[str] | None = None,
+        batch: str | None = None,
+        include_root_epic: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return issues for *project_slug* that match every supplied filter.
+
+        See ``InMemoryPlaneClient.query_issues`` for filter semantics. The
+        ``modules`` filter is resolved against Plane's module-issues join.
+        """
+        states_set = set(states) if states else None
+        state_id_to_name = {item["id"]: item["name"] for item in self.api.paginate_v1(f"{self.proj_v1}/states/")}
+
+        module_member_ids: set[str] | None = None
+        if modules:
+            module_member_ids = set()
+            modules_by_name = self._modules()
+            for name in modules:
+                module = modules_by_name.get(name)
+                if not module:
+                    continue
+                for entry in self.api.paginate_v1(f"{self.proj_v1}/modules/{module['id']}/module-issues/"):
+                    issue_id = entry.get("issue") or entry.get("id")
+                    if issue_id:
+                        module_member_ids.add(str(issue_id))
+
+        results: list[dict[str, Any]] = []
+        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+            external_id = issue.get("external_id") or ""
+            if not external_id:
+                continue
+            if not include_root_epic and external_id.endswith("-ROOT"):
+                continue
+            state_name = state_id_to_name.get(issue.get("state")) or ""
+            if states_set is not None and state_name not in states_set:
+                continue
+            if batch is not None and _batch_sort_key(external_id) != batch:
+                continue
+            if module_member_ids is not None and str(issue.get("id") or "") not in module_member_ids:
+                continue
+            adapted = _adapt_issue(issue)
+            adapted["state"] = state_name or adapted.get("state")
+            results.append(adapted)
+        results.sort(key=lambda i: i.get("external_id", ""))
+        return results
+
     def publish_run_report(self, project_slug: str, external_id: str, report: dict[str, Any]) -> dict[str, Any]:
         return self.add_comment(
             project_slug,
@@ -960,6 +1019,10 @@ def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
     adapted = dict(issue)
     sequence_id = adapted.get("sequence_id")
     adapted.setdefault("key", f"DOR-{sequence_id}" if sequence_id is not None else adapted.get("external_id", ""))
+    adapted.setdefault(
+        "depends_on",
+        _extract_frontmatter_list(issue.get("description_html") or "", "depends_on"),
+    )
     return adapted
 
 

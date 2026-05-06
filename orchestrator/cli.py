@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from . import approve_batch, audit_batch, batches, provision, scaffold, status, submit_batch
+from . import approve_batch, audit_batch, batches, provision, query_issues, refresh_roots, scaffold, status, submit_batch
 
 
 SUBCOMMANDS = {
@@ -11,6 +11,8 @@ SUBCOMMANDS = {
     "approve": approve_batch.main,
     "batches": batches.main,
     "provision": provision.main,
+    "query-issues": query_issues.main,
+    "refresh-roots": refresh_roots.main,
     "scaffold": scaffold.main,
     "status": status.main,
     "submit": submit_batch.main,

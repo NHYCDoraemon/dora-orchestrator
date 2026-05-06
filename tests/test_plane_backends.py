@@ -90,6 +90,62 @@ class PlaneBackendTest(unittest.TestCase):
             self.assertEqual(reloaded.pages[("demo", "program-demo")]["title"], "Program")
             self.assertIsNone(reloaded.next_ready_issue("demo"))
 
+    def test_root_epic_state_rolls_up_from_children(self):
+        from orchestrator.in_memory_plane import InMemoryPlaneClient
+
+        client = InMemoryPlaneClient()
+        client.upsert_project("demo", "Demo")
+        # ROOT first, then 3 children parented to it.
+        client.upsert_issue("demo", "DEMO-ROOT", {"name": "Root", "issue_type": "root_epic"})
+        for ext in ("DEMO-T01", "DEMO-T02", "DEMO-T03"):
+            client.upsert_issue(
+                "demo",
+                ext,
+                {
+                    "name": ext,
+                    "issue_type": "task",
+                    "parent_external_id": "DEMO-ROOT",
+                    "depends_on": [],
+                },
+            )
+
+        # All children Backlog/Todo → ROOT stays Backlog (not started).
+        client.release_issue("demo", "DEMO-T01", "Todo")
+        self.assertEqual(client.issues[("demo", "DEMO-ROOT")]["state"], "Backlog")
+
+        # First child claimed → ROOT becomes In Progress.
+        client.claim_issue("demo", "DEMO-T01", "run-1")
+        self.assertEqual(client.issues[("demo", "DEMO-ROOT")]["state"], "In Progress")
+
+        # First child Done, others not yet → ROOT stays In Progress.
+        client.release_issue("demo", "DEMO-T01", "Done")
+        self.assertEqual(client.issues[("demo", "DEMO-ROOT")]["state"], "In Progress")
+
+        # All children Done → ROOT becomes Done.
+        client.release_issue("demo", "DEMO-T02", "Done")
+        client.release_issue("demo", "DEMO-T03", "Done")
+        self.assertEqual(client.issues[("demo", "DEMO-ROOT")]["state"], "Done")
+
+    def test_state_counts_groups_in_memory_issues_by_state(self):
+        from orchestrator.in_memory_plane import InMemoryPlaneClient
+
+        client = InMemoryPlaneClient()
+        client.upsert_project("demo", "Demo")
+        for ext in ("DEMO-T01", "DEMO-T02", "DEMO-T03"):
+            client.upsert_issue("demo", ext, {"name": ext, "depends_on": []})
+        client.claim_issue("demo", "DEMO-T01", "run-1")
+        client.release_issue("demo", "DEMO-T02", "Done")
+        client.upsert_issue("demo", "OTHER-T01", {"name": "OTHER-T01", "depends_on": []})
+        client.upsert_project("other", "Other")
+        client.upsert_issue("other", "OTHER-T01", {"name": "Other project", "depends_on": []})
+
+        counts = client.state_counts("demo")
+
+        self.assertEqual(counts.get("In Progress"), 1)
+        self.assertEqual(counts.get("Done"), 1)
+        self.assertEqual(sum(counts.values()), 4)
+        self.assertNotIn("Other project", counts)
+
     def test_local_backend_keeps_done_issue_done_after_upsert(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "plane-state.json"

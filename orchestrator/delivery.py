@@ -441,23 +441,70 @@ def _try_update_ref(
     old_sha: str,
     main_was_clean: bool,
 ) -> tuple[bool, str]:
-    """Atomic CAS update-ref and optionally refresh the main checkout."""
+    """Atomic CAS update-ref and refresh the main checkout's working tree.
+
+    Strategies returned:
+      - ``ff``: clean WT, simple ``reset --hard`` to match new HEAD.
+      - ``ff_dirty_applied``: dirty WT, autostash → reset → pop succeeded.
+      - ``ff_dirty_stashed``: dirty WT, autostash → reset succeeded but
+        pop conflicted; stash entry is left in place for human inspection.
+      - ``ff_dirty_nostash``: dirty WT but stash refused (e.g. only
+        untracked files); reset still ran since untracked files survive.
+
+    The dirty path keeps the user's tracked-file edits while ensuring
+    the working tree no longer lags behind ``refs/heads/<base_branch>``.
+    Untracked files are intentionally not stashed (``-u`` omitted) so
+    things like ``__pycache__/`` remain in place.
+    """
+    # Order matters: stash BEFORE update-ref. Once refs/heads/<base_branch>
+    # jumps to new_sha, the stale working tree shows a synthetic diff
+    # (deletes for files that only exist in new_sha, modifications for files
+    # the new commits changed). Stashing then would capture that synthetic
+    # diff; popping it later would un-do the very ref move we just made.
+    actually_stashed = False
+    if not main_was_clean:
+        stash_msg = f"orchestrator-autostash {base_branch} {new_sha[:7]}"
+        stash_push = subprocess.run(
+            ["git", "stash", "push", "-m", stash_msg],
+            cwd=str(repo_root),
+            capture_output=True, text=True, check=False,
+        )
+        actually_stashed = (
+            stash_push.returncode == 0
+            and "No local changes to save" not in stash_push.stdout
+        )
+
     proc = subprocess.run(
         ["git", "update-ref", f"refs/heads/{base_branch}", new_sha, old_sha],
         cwd=str(repo_root),
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
+        if actually_stashed:
+            subprocess.run(
+                ["git", "stash", "pop"],
+                cwd=str(repo_root),
+                capture_output=True, text=True, check=False,
+            )
         return False, "update_ref_rejected"
 
-    # Refresh the main checkout's working tree.
-    strategy = "ff" if main_was_clean else "ff_dirty"
+    subprocess.run(
+        ["git", "reset", "--hard", "HEAD"],
+        cwd=str(repo_root),
+        capture_output=True, text=True, check=False,
+    )
+
     if main_was_clean:
-        reset = subprocess.run(
-            ["git", "reset", "--hard", "HEAD"],
-            cwd=str(repo_root),
-            capture_output=True, text=True, check=False,
-        )
-        if reset.returncode != 0:
-            pass  # best-effort; the ref already moved
-    return True, strategy
+        return True, "ff"
+
+    if not actually_stashed:
+        return True, "ff_dirty_nostash"
+
+    pop = subprocess.run(
+        ["git", "stash", "pop"],
+        cwd=str(repo_root),
+        capture_output=True, text=True, check=False,
+    )
+    if pop.returncode != 0:
+        return True, "ff_dirty_stashed"
+    return True, "ff_dirty_applied"

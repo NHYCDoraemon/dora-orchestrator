@@ -24,48 +24,27 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config()
     client = create_plane_client(config)
 
-    # Build status summary from plane state
-    state_counts: dict[str, int] = {}
-    blocked_issues: list[dict] = []
-    total = 0
+    state_counts = client.state_counts(resolved.project_slug)
+    total = sum(state_counts.values())
 
-    if hasattr(client, "issues") and isinstance(client.issues, dict):
-        for (slug, external_id), issue in client.issues.items():
-            if slug != resolved.project_slug:
-                continue
-            total += 1
-            state = issue.get("state", "Unknown")
-            state_counts[state] = state_counts.get(state, 0) + 1
-            if state == "Blocked":
-                blocked_issues.append({
-                    "external_id": external_id,
-                    "name": issue.get("name", ""),
-                    "depends_on": issue.get("depends_on", []),
-                    "priority": issue.get("priority", ""),
-                    "module": issue.get("module", ""),
-                })
-    else:
-        # For live Plane backend, use the blocked_issues method
-        blocked = client.blocked_issues(resolved.project_slug)
-        blocked_issues = [
-            {
-                "external_id": i.get("external_id", ""),
-                "name": i.get("name", ""),
-                "depends_on": i.get("depends_on", []),
-                "priority": i.get("priority", ""),
-                "module": i.get("module", ""),
-            }
-            for i in blocked
-        ]
-        for i in blocked_issues:
-            state_counts["Blocked"] = state_counts.get("Blocked", 0) + 1
+    blocked = client.blocked_issues(resolved.project_slug)
+    blocked_issues = [
+        {
+            "external_id": i.get("external_id", ""),
+            "name": i.get("name", ""),
+            "depends_on": list(i.get("depends_on") or []),
+            "priority": i.get("priority", ""),
+            "module": i.get("module", ""),
+        }
+        for i in blocked
+    ]
 
     result = {
         "status": "OK",
         "repo_root": str(resolved.repo_root),
         "project_slug": resolved.project_slug,
         "project_title": resolved.project_title,
-        "total_issues": total if total else len(blocked_issues),
+        "total_issues": total,
         "state_summary": state_counts,
         "blocked_count": len(blocked_issues),
         "blocked_issues": blocked_issues if args.show_blocked else [],
@@ -73,8 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
 
     print(f"\nProject: {resolved.project_slug} ({resolved.repo_root})", file=sys.stderr)
-    if total or blocked_issues:
-        print(f"  Issues: {total if total else len(blocked_issues)} total", file=sys.stderr)
+    if total:
+        print(f"  Issues: {total} total", file=sys.stderr)
         for state, count in sorted(state_counts.items()):
             flag = "  [!] " if state == "Blocked" else "     "
             print(f"{flag}{state}: {count}", file=sys.stderr)

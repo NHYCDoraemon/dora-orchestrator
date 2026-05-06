@@ -309,6 +309,60 @@ class LivePlaneClientTest(unittest.TestCase):
         ready = client.next_ready_issue("dora")
         self.assertIsNone(ready, "corrupted heartbeat is not evidence of stale lock")
 
+    def test_state_counts_aggregates_every_state(self):
+        api = FakePlaneApi(
+            states=[
+                {"id": "s-todo", "name": "Todo"},
+                {"id": "s-prog", "name": "In Progress"},
+                {"id": "s-done", "name": "Done"},
+                {"id": "s-block", "name": "Blocked"},
+            ],
+            issues=[
+                {"id": "i1", "external_id": "X-T01", "state": "s-todo"},
+                {"id": "i2", "external_id": "X-T02", "state": "s-todo"},
+                {"id": "i3", "external_id": "X-T03", "state": "s-prog"},
+                {"id": "i4", "external_id": "X-T04", "state": "s-done"},
+                {"id": "i5", "external_id": "X-T05", "state": "s-block"},
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        counts = client.state_counts("dora")
+
+        self.assertEqual(
+            counts,
+            {"Todo": 2, "In Progress": 1, "Done": 1, "Blocked": 1},
+        )
+
+    def test_blocked_issues_exposes_depends_on_from_description(self):
+        from orchestrator.plane_live import _adapt_issue
+
+        adapted = _adapt_issue(
+            {
+                "id": "i1",
+                "external_id": "DOR-CHATBUG-20260505B-T06",
+                "sequence_id": 999,
+                "description_html": (
+                    "<pre>depends_on:\n  - DOR-CHATBUG-20260505B-T05\n"
+                    "  - DOR-CHATBUG-20260505B-T04\nrisk: high\n</pre>"
+                ),
+            }
+        )
+
+        self.assertEqual(
+            adapted["depends_on"],
+            ["DOR-CHATBUG-20260505B-T05", "DOR-CHATBUG-20260505B-T04"],
+        )
+        self.assertEqual(adapted["key"], "DOR-999")
+
     def test_pages_require_session_credentials(self):
         client = LivePlaneClient(
             LivePlaneSettings(

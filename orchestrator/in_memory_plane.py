@@ -99,6 +99,7 @@ class InMemoryPlaneClient:
         issue["state"] = "In Progress"
         issue["assignee"] = run_id
         issue["dagster_run_id"] = run_id
+        self._refresh_root_epics(project_slug)
         return issue
 
     def release_issue(self, project_slug: str, external_id: str, state: str) -> dict[str, Any]:
@@ -108,6 +109,7 @@ class InMemoryPlaneClient:
         # Re-evaluate all issues in the project — a newly Done task
         # may unblock dependents.
         self._refresh_blocked(project_slug)
+        self._refresh_root_epics(project_slug)
         return issue
 
     def publish_run_report(self, project_slug: str, external_id: str, report: dict[str, Any]) -> dict[str, Any]:
@@ -169,6 +171,55 @@ class InMemoryPlaneClient:
             key=lambda i: i.get("external_id", ""),
         )
 
+    def state_counts(self, project_slug: str) -> dict[str, int]:
+        """Return {state_name: count} for all issues in *project_slug*."""
+        counts: dict[str, int] = {}
+        for (slug, _ext), issue in self.issues.items():
+            if slug != project_slug:
+                continue
+            state = str(issue.get("state") or "Unknown")
+            counts[state] = counts.get(state, 0) + 1
+        return counts
+
+    def query_issues(
+        self,
+        project_slug: str,
+        *,
+        states: list[str] | None = None,
+        modules: list[str] | None = None,
+        batch: str | None = None,
+        include_root_epic: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return issues for *project_slug* that match every supplied filter.
+
+        Filters are AND-combined; an unset filter matches everything.
+
+        - ``states``: keep only issues whose state name is in this list.
+        - ``modules``: keep only issues whose ``module`` field is in this list.
+        - ``batch``: keep only issues whose external_id batch segment matches.
+          The batch segment is the third dash-group of the external_id
+          (the ``<YYYYMMDDA>`` from ``<PROJECT>-<PROGRAM>-<YYYYMMDDA>-T<NN>``).
+        - ``include_root_epic``: include ``issue_type == "root_epic"`` rows
+          (default False — operators usually want task issues only).
+        """
+        states_set = set(states) if states else None
+        modules_set = set(modules) if modules else None
+        results: list[dict[str, Any]] = []
+        for (slug, external_id), issue in self.issues.items():
+            if slug != project_slug:
+                continue
+            if not include_root_epic and issue.get("issue_type") == "root_epic":
+                continue
+            if states_set is not None and str(issue.get("state") or "") not in states_set:
+                continue
+            if modules_set is not None and str(issue.get("module") or "") not in modules_set:
+                continue
+            if batch is not None and _batch_sort_key(external_id) != batch:
+                continue
+            results.append(issue)
+        results.sort(key=lambda i: i.get("external_id", ""))
+        return results
+
     # ── internal helpers ──────────────────────────────────────────
 
     def _done_set(self, project_slug: str) -> set[str]:
@@ -195,6 +246,35 @@ class InMemoryPlaneClient:
             else:
                 if current != "Blocked":
                     issue["state"] = "Blocked"
+
+    def _refresh_root_epics(self, project_slug: str) -> None:
+        """Roll up every root_epic state from its direct children.
+
+        - all children Done/Cancelled               → ROOT Done
+        - any child In Progress/Partial             → ROOT In Progress
+        - any child Done/Cancelled (some not yet)   → ROOT In Progress
+        - otherwise (all Backlog/Todo/Blocked)      → ROOT Backlog
+        """
+        children_by_parent: dict[str, list[dict[str, Any]]] = {}
+        for (slug, _ext), issue in self.issues.items():
+            if slug != project_slug:
+                continue
+            parent_ext = issue.get("parent_external_id")
+            if parent_ext:
+                children_by_parent.setdefault(parent_ext, []).append(issue)
+        for parent_ext, children in children_by_parent.items():
+            parent = self.issues.get((project_slug, parent_ext))
+            if not parent or parent.get("issue_type") != "root_epic":
+                continue
+            statuses = [c.get("state", "Backlog") for c in children]
+            if all(s in {"Done", "Cancelled"} for s in statuses):
+                target = "Done"
+            elif any(s in {"In Progress", "Partial", "Done", "Cancelled"} for s in statuses):
+                target = "In Progress"
+            else:
+                target = "Backlog"
+            if parent.get("state") != target:
+                parent["state"] = target
 
     def set_retry_count(self, project_slug: str, external_id: str, count: int) -> None:
         issue = self.issues.get((project_slug, external_id))

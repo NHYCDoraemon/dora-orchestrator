@@ -56,7 +56,18 @@ def resolve_project_config(
             if title is None:
                 title = entry.get("title")
 
-    # Try cwd .dora/project.json discovery
+    # When --repo is explicit, prefer <repo>/.dora/project.json over cwd walk —
+    # otherwise running `orchestrator status --repo /path/to/X` from inside
+    # /path/to/Y silently picks up Y's project_slug.
+    if repo_root is not None and (slug is None or title is None):
+        from_repo = _discover_in(repo_root)
+        if from_repo:
+            if slug is None:
+                slug = from_repo.get("slug")
+            if title is None:
+                title = from_repo.get("title")
+
+    # Fallback: walk up from cwd
     if repo_root is None or slug is None or title is None:
         discovered = _discover_from_cwd()
         if discovered:
@@ -106,18 +117,25 @@ def _discover_from_cwd() -> dict | None:
     """Walk up from cwd to find .dora/project.json, return repo_root/slug/title."""
     cwd = Path.cwd().resolve()
     for parent in [cwd, *cwd.parents]:
-        project_json = parent / ".dora" / "project.json"
-        if project_json.exists():
-            try:
-                data = json.loads(project_json.read_text(encoding="utf-8"))
-                return {
-                    "repo_root": parent,
-                    "slug": data.get("project_slug", ""),
-                    "title": data.get("title", ""),
-                }
-            except (json.JSONDecodeError, OSError):
-                return None
+        result = _discover_in(parent)
+        if result is not None:
+            return {"repo_root": parent, **result}
     return None
+
+
+def _discover_in(repo_root: Path) -> dict | None:
+    """Read <repo_root>/.dora/project.json, return {slug, title} or None."""
+    project_json = repo_root / ".dora" / "project.json"
+    if not project_json.exists():
+        return None
+    try:
+        data = json.loads(project_json.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return {
+        "slug": data.get("project_slug", ""),
+        "title": data.get("title", ""),
+    }
 
 
 def _load_registry_entry(project_slug: str, registry_dir: Path | None = None) -> dict | None:

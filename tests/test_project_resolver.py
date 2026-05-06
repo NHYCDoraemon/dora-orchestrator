@@ -75,6 +75,38 @@ class ResolveProjectConfigTest(unittest.TestCase):
             self.assertEqual(result.project_slug, "explicit-slug")
             self.assertEqual(result.project_title, "Explicit Title")
 
+    def test_repo_argument_reads_repos_dora_project_json_not_cwd(self):
+        """When --repo is explicit, project_slug must come from
+        <repo>/.dora/project.json — NOT from .dora/project.json reachable
+        by walking up from cwd. Pre-fix, running `status --repo /path/to/X`
+        from inside /path/to/Y silently picked up Y's slug."""
+        with tempfile.TemporaryDirectory() as tmp_repo, tempfile.TemporaryDirectory() as tmp_cwd:
+            target_repo = Path(tmp_repo)
+            (target_repo / ".dora").mkdir()
+            (target_repo / ".dora" / "project.json").write_text(
+                json.dumps({"project_slug": "target-slug", "title": "Target Title"}),
+                encoding="utf-8",
+            )
+
+            # cwd has its own .dora/project.json that should be ignored
+            cwd_repo = Path(tmp_cwd)
+            (cwd_repo / ".dora").mkdir()
+            (cwd_repo / ".dora" / "project.json").write_text(
+                json.dumps({"project_slug": "cwd-slug", "title": "Cwd Title"}),
+                encoding="utf-8",
+            )
+
+            import os
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(str(cwd_repo))
+                result = resolve_project_config(repo=str(target_repo))
+                self.assertEqual(result.project_slug, "target-slug")
+                self.assertEqual(result.project_title, "Target Title")
+                self.assertEqual(result.repo_root, target_repo.resolve())
+            finally:
+                os.chdir(old_cwd)
+
     def test_dora_project_json_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

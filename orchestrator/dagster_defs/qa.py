@@ -644,10 +644,10 @@ def build_qa_collection_op(cfg: ProjectConfig):
     """One op per project. Reads scenarios from `<repo_root>/docs/quality/scenarios/`,
     runs each through `<repo_root>/dora`, posts verdicts to Plane.
     """
-    op_name = f"{cfg.slug}_qa_collection"
+    op_name = f"{cfg.slug}_qa_collection_op"
 
     @op(name=op_name)
-    def _qa_collection_op(context: OpExecutionContext) -> dict:
+    def _qa_collection_op(context) -> dict:
         from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
 
         repo_root = Path(cfg.repo_root)
