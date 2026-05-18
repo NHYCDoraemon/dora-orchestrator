@@ -49,9 +49,9 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
     run_op = build_single_op(cfg)
     op_retry = RetryPolicy(max_retries=2, delay=5)
 
-    job_name = f"{cfg.slug}_run_ready_batch_task"
-    schedule_name = f"{cfg.slug}_every_{_cron_label(cfg.schedule_cron)}"
-    concurrency_key = f"orch_{cfg.slug}"
+    job_name = f"{cfg.safe_name}_run_ready_batch_task"
+    schedule_name = f"{cfg.safe_name}_every_{_cron_label(cfg.schedule_cron)}"
+    concurrency_key = f"orch_{cfg.safe_name}"
 
     @job(
         name=job_name,
@@ -149,8 +149,8 @@ def _probe_next_ready(cfg: ProjectConfig) -> str | None:
     not fail-loud the schedule and page the operator.
     """
     try:
-        from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
-        client = LivePlaneClient(LivePlaneSettings.from_env())
+        from .plane_helpers import per_project_plane_client
+        client = per_project_plane_client(cfg)
         ready = client.next_ready_issue(cfg.slug)
     except Exception:
         return "_probe_failed"
@@ -174,17 +174,17 @@ def _cron_label(cron: str) -> str:
 
 def _make_status_asset(cfg: ProjectConfig):
     @asset(
-        name=f"{cfg.slug}_status",
-        group_name=f"{cfg.slug}_orchestrator",
+        name=f"{cfg.safe_name}_status",
+        group_name=f"{cfg.safe_name}_orchestrator",
         description=(
             f"Read-only snapshot of '{cfg.slug}' Plane queue: ready/in-progress/done "
             f"counts, current claimed task (if any), worktrees on disk."
         ),
     )
     def status(context: AssetExecutionContext) -> MaterializeResult:
-        from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
+        from .plane_helpers import per_project_plane_client
 
-        client = LivePlaneClient(LivePlaneSettings.from_env())
+        client = per_project_plane_client(cfg)
         ready = client.next_ready_issue(cfg.slug)
         worktree_dir = cfg.worktree_root / cfg.slug
         worktrees = (
@@ -214,8 +214,8 @@ def _make_status_asset(cfg: ProjectConfig):
 
 def _make_reset_lease_asset(cfg: ProjectConfig):
     @asset(
-        name=f"{cfg.slug}_reset_lease",
-        group_name=f"{cfg.slug}_orchestrator",
+        name=f"{cfg.safe_name}_reset_lease",
+        group_name=f"{cfg.safe_name}_orchestrator",
         description=(
             f"Recovery: any task that's been In Progress for >60 min is force-released "
             f"back to Backlog with a `needs:review` label, so the schedule can re-pick it. "
@@ -225,9 +225,9 @@ def _make_reset_lease_asset(cfg: ProjectConfig):
     def reset_lease(context: AssetExecutionContext) -> MaterializeResult:
         from datetime import datetime, timezone
 
-        from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
+        from .plane_helpers import per_project_plane_client
 
-        client = LivePlaneClient(LivePlaneSettings.from_env())
+        client = per_project_plane_client(cfg)
         api = client.api
         path = (
             f"/api/v1/workspaces/{client.settings.workspace_slug}/projects/"
@@ -275,8 +275,8 @@ def _make_reset_lease_asset(cfg: ProjectConfig):
 
 def _make_list_worktrees_asset(cfg: ProjectConfig):
     @asset(
-        name=f"{cfg.slug}_worktrees",
-        group_name=f"{cfg.slug}_orchestrator",
+        name=f"{cfg.safe_name}_worktrees",
+        group_name=f"{cfg.safe_name}_orchestrator",
         description=(
             f"List git worktrees this orchestrator created for '{cfg.slug}' under "
             f"{cfg.worktree_root / cfg.slug}. Useful for cleanup planning."

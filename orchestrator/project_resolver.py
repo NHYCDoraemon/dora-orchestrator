@@ -262,7 +262,7 @@ def write_project_registry(
         "plane_workspace_slug": "",
         "schedule_cron": "*/2 * * * *",
         "schedule_timezone": "Asia/Shanghai",
-        "default_executor": "noop",
+        "default_executor": "codex",
         "max_runtime_seconds": 3600,
         "git_branch_prefix": "orchestrator",
         "git_base_branch": "main",

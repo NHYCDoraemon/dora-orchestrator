@@ -43,7 +43,7 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(cfg.slug, "dora")
         self.assertEqual(cfg.title, "Dora")
         self.assertEqual(cfg.repo_root, Path("/tmp/repo"))
-        self.assertEqual(cfg.default_executor, "noop")
+        self.assertEqual(cfg.default_executor, "codex")
         self.assertEqual(cfg.schedule_cron, "*/2 * * * *")
         self.assertFalse(cfg.enable_push)
         self.assertFalse(cfg.enable_pr)

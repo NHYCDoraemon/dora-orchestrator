@@ -644,7 +644,7 @@ def build_qa_collection_op(cfg: ProjectConfig):
     """One op per project. Reads scenarios from `<repo_root>/docs/quality/scenarios/`,
     runs each through `<repo_root>/dora`, posts verdicts to Plane.
     """
-    op_name = f"{cfg.slug}_qa_collection_op"
+    op_name = f"{cfg.safe_name}_qa_collection_op"
 
     @op(name=op_name)
     def _qa_collection_op(context) -> dict:
@@ -669,7 +669,9 @@ def build_qa_collection_op(cfg: ProjectConfig):
         scenarios = _load_scenarios(scenarios_dir)
         context.log.info(f"qa: {len(scenarios)} scenarios discovered")
 
-        client = LivePlaneClient(LivePlaneSettings.from_env())
+        from .plane_helpers import per_project_plane_client
+
+        client = per_project_plane_client(cfg)
         results: list[RunResult] = []
         for s in scenarios:
             context.log.info(
@@ -787,9 +789,9 @@ def build_qa_definitions(cfg: ProjectConfig) -> Definitions:
     qa_op = build_qa_collection_op(cfg)
     op_retry = RetryPolicy(max_retries=1, delay=10)
 
-    job_name = f"{cfg.slug}_qa_collection"
-    schedule_name = f"{cfg.slug}_qa_daily"
-    concurrency_key = f"qa_{cfg.slug}"
+    job_name = f"{cfg.safe_name}_qa_collection"
+    schedule_name = f"{cfg.safe_name}_qa_daily"
+    concurrency_key = f"qa_{cfg.safe_name}"
 
     @job(
         name=job_name,

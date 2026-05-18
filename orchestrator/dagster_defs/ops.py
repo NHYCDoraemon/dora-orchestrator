@@ -25,7 +25,7 @@ def build_single_op(cfg: ProjectConfig):
     """
 
     @op(
-        name=f"{cfg.slug}_run_orchestrator",
+        name=f"{cfg.safe_name}_run_orchestrator",
         description=(
             f"Claim, execute, verify, release, and deliver one ready batch "
             f"task for project '{cfg.slug}'. All business logic delegated "
@@ -41,10 +41,11 @@ def build_single_op(cfg: ProjectConfig):
 
         from orchestrator.config import OrchestratorConfig
         from orchestrator.delivery import DeliveryConfig
-        from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
         from orchestrator.run_ready_task import run_ready_batch_task
 
-        client = LivePlaneClient(LivePlaneSettings.from_env())
+        from .plane_helpers import per_project_plane_client
+
+        client = per_project_plane_client(cfg)
 
         config = OrchestratorConfig(
             spec_path=cfg.repo_root / "examples" / "dora.orchestration.json",

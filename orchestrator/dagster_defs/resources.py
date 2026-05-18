@@ -7,5 +7,5 @@ from pathlib import Path
 @dataclass(frozen=True)
 class RepoConfig:
     root: Path
-    default_executor: str = "noop"
+    default_executor: str = "codex"
 

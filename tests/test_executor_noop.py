@@ -62,7 +62,9 @@ class ExecutorNoopTest(unittest.TestCase):
             command = CodexExecutor().build_command(ctx)
             self.assertEqual(command[:2], ["codex", "exec"])
             # Non-interactive: must be self-driving without human approval prompts.
-            self.assertIn("--full-auto", command)
+            # Codex CLI 0.128 dropped --full-auto; the bypass flag is now the
+            # only way to skip both approvals and sandboxing in headless mode.
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
             # Worktrees may not be valid git repos at the moment of invocation;
             # skip the inner check so the executor doesn't refuse to run.
             self.assertIn("--skip-git-repo-check", command)

@@ -84,6 +84,7 @@ class ClaudeExecutor:
             context.event_path,
             context.idle_timeout_seconds,
             context.hard_timeout_seconds,
+            agent_label="Claude",
         )
         return ExecutorResult(
             outcome=outcome,
@@ -92,13 +93,43 @@ class ClaudeExecutor:
         )
 
 
+def _claude_result_text(event_path) -> str:
+    """Default result-text extractor for claude's stream-json output.
+
+    Walks the events file backwards looking for the last ``type:"result"``
+    event and returns its ``result`` string. Empty on any read or parse error.
+    """
+    try:
+        if not (event_path and event_path.exists()):
+            return ""
+        with event_path.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if evt.get("type") == "result":
+            return str(evt.get("result", ""))
+    return ""
+
+
 def _classify_outcome(
     rc: int,
     event_path,
     idle_timeout_seconds: int = 1800,
     hard_timeout_seconds: int = 3600,
+    *,
+    agent_label: str = "Claude",
+    result_text_extractor=None,
 ) -> tuple[str, str]:
     """Derive outcome and summary from exit code and the last result event.
+
+    Shared by ClaudeExecutor and CodexExecutor. Pass ``agent_label`` for
+    summary strings and ``result_text_extractor`` to plug in the agent's
+    own event schema (defaults to claude's stream-json).
 
     Distinguishes five error classes so downstream ops (release, merge) can
     decide whether a failure is the agent's fault or an infrastructure problem:
@@ -112,7 +143,7 @@ def _classify_outcome(
     * ``agent_err:N`` — all other non-zero exits → genuine task failure.
     """
     if rc == 0:
-        return "agent_done", "Claude exited with 0."
+        return "agent_done", f"{agent_label} exited with 0."
     if rc == RC_IDLE_TIMEOUT:
         return (
             "agent_idle_timeout",
@@ -124,27 +155,9 @@ def _classify_outcome(
             f"Hard timeout after {hard_timeout_seconds}s — killed process group.",
         )
 
-    result_text = ""
-    is_error = True
-    subtype = ""
-
-    try:
-        if event_path and event_path.exists():
-            # Walk backwards through the file to find the last result event.
-            with event_path.open("r", encoding="utf-8") as fh:
-                lines = fh.readlines()
-            for line in reversed(lines):
-                try:
-                    evt = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if evt.get("type") == "result":
-                    is_error = bool(evt.get("is_error", True))
-                    subtype = str(evt.get("subtype", ""))
-                    result_text = str(evt.get("result", ""))
-                    break
-    except OSError:
-        pass
+    if result_text_extractor is None:
+        result_text_extractor = _claude_result_text
+    result_text = result_text_extractor(event_path) or ""
 
     # ── config errors ──────────────────────────────────────────────
     _config_patterns = [
@@ -188,7 +201,7 @@ def _classify_outcome(
     # ── genuine failure ────────────────────────────────────────────
     return (
         f"agent_err:{rc}",
-        f"Claude exited with {rc}. {result_text[:300]}",
+        f"{agent_label} exited with {rc}. {result_text[:300]}",
     )
 
 
