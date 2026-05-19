@@ -7,6 +7,7 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.plane_backends import create_plane_client
 from orchestrator.local_plane import LocalPlaneClient
 from orchestrator.plane_live import LivePlaneClient
+from orchestrator.project_resolver import resolve_project_config
 
 
 class PlaneBackendTest(unittest.TestCase):
@@ -56,6 +57,52 @@ class PlaneBackendTest(unittest.TestCase):
 
             self.assertIsInstance(client, LivePlaneClient)
             self.assertEqual(client.settings.project_id, "project-1")
+
+    def test_live_backend_prefers_project_registry_plane_id_over_env_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            registry = Path(tmp) / "registry"
+            registry.mkdir()
+            (registry / "process-engine.json").write_text(
+                """
+{
+  "slug": "process-engine",
+  "title": "Process Engine",
+  "repo_root": "%s",
+  "plane_project_id": "process-plane-id",
+  "plane_workspace_slug": "doraemon"
+}
+"""
+                % repo,
+                encoding="utf-8",
+            )
+            resolved = resolve_project_config(
+                project="process-engine",
+                registry_dir=registry,
+            )
+            config = OrchestratorConfig(
+                spec_path=repo / "spec.json",
+                target_repo=repo,
+                executor="noop",
+                plane_backend="live",
+            )
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "PLANE_BASE_URL": "https://plane.example",
+                    "PLANE_WORKSPACE_SLUG": "doraemon",
+                    "PLANE_PROJECT_ID": "dora-plane-id",
+                    "PLANE_API_KEY": "token",
+                },
+                clear=False,
+            ):
+                client = create_plane_client(config, resolved_project=resolved)
+
+            self.assertIsInstance(client, LivePlaneClient)
+            self.assertEqual(client.settings.project_id, "process-plane-id")
+            self.assertEqual(client.settings.workspace_slug, "doraemon")
 
     def test_local_backend_persists_issue_state_between_instances(self):
         with tempfile.TemporaryDirectory() as tmp:

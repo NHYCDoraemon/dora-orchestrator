@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config()
     repo_root = resolved.repo_root
-    client = create_plane_client(config)
+    client = create_plane_client(config, resolved_project=resolved)
     result = submit_task_issue_batch(
         resolved.batch_path,
         repo_root=repo_root,

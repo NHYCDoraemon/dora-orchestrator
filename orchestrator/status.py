@@ -22,7 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     config = load_config()
-    client = create_plane_client(config)
+    client = create_plane_client(config, resolved_project=resolved)
 
     state_counts = client.state_counts(resolved.project_slug)
     total = sum(state_counts.values())

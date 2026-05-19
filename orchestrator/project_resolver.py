@@ -18,6 +18,8 @@ class ResolvedConfig:
     project_slug: str
     project_title: str
     batch_path: Path | None = None
+    plane_project_id: str = ""
+    plane_workspace_slug: str = ""
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ def resolve_project_config(
     repo_root = Path(repo).expanduser().resolve() if repo else None
     slug = project_slug
     title = project_title
+    plane_project_id = ""
+    plane_workspace_slug = ""
 
     # Try --project <slug> registry lookup
     if project:
@@ -55,6 +59,8 @@ def resolve_project_config(
                 slug = entry.get("slug")
             if title is None:
                 title = entry.get("title")
+            plane_project_id = str(entry.get("plane_project_id") or "")
+            plane_workspace_slug = str(entry.get("plane_workspace_slug") or "")
 
     # When --repo is explicit, prefer <repo>/.dora/project.json over cwd walk —
     # otherwise running `orchestrator status --repo /path/to/X` from inside
@@ -95,6 +101,8 @@ def resolve_project_config(
         project_slug=slug,
         project_title=title,
         batch_path=batch_path,
+        plane_project_id=plane_project_id,
+        plane_workspace_slug=plane_workspace_slug,
     )
 
 
@@ -152,6 +160,8 @@ def _load_registry_entry(project_slug: str, registry_dir: Path | None = None) ->
             else None,
             "slug": data.get("slug", project_slug),
             "title": data.get("title", ""),
+            "plane_project_id": data.get("plane_project_id", ""),
+            "plane_workspace_slug": data.get("plane_workspace_slug", ""),
         }
     except (json.JSONDecodeError, OSError, KeyError):
         return None

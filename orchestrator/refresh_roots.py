@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
 
     resolved = resolve_project_config(repo=args.repo, project=args.project)
     config = load_config()
-    client = create_plane_client(config)
+    client = create_plane_client(config, resolved_project=resolved)
 
     refresh = getattr(client, "_refresh_root_epics", None)
     if refresh is None:
