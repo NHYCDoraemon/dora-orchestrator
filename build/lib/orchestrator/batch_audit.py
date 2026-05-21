@@ -1,0 +1,297 @@
+"""Audit TaskIssueDraft batches before Plane submission."""
+
+import hashlib
+import re
+from dataclasses import asdict
+from pathlib import Path
+
+from .batch_loader import load_task_issue_batch
+from .batch_models import (
+    FIXED_MODULE_TAXONOMY,
+    REQUIRED_ISSUE_PACKET_SECTIONS,
+    AuditFinding,
+    BatchAuditResult,
+    TaskIssueBatch,
+    TaskIssueDraft,
+)
+
+
+TASK_ID_RE = re.compile(r"^(?P<project>[A-Z][A-Z0-9]*)-(?P<program>[A-Z][A-Z0-9]*)-(?P<batch>[0-9]{8}[A-Z])-T(?P<seq>[0-9]{2,3})$")
+
+
+def audit_task_issue_batch(
+    batch_dir: Path,
+    *,
+    repo_root: Path | None = None,
+    write_generated: bool = False,
+) -> BatchAuditResult:
+    try:
+        batch = load_task_issue_batch(batch_dir, repo_root=repo_root)
+    except (FileNotFoundError, ValueError) as exc:
+        result = BatchAuditResult(
+            status="FAIL",
+            batch_id=Path(batch_dir).name,
+            task_count=0,
+            findings=[AuditFinding(code="structure", message=str(exc), path=str(batch_dir))],
+        )
+        if write_generated:
+            _write_generated_files(Path(batch_dir), result, None)
+        return result
+
+    findings: list[AuditFinding] = []
+    _audit_batch_metadata(batch, findings)
+    task_ids = {task.task_id for task in batch.tasks}
+    for task in batch.tasks:
+        _audit_task_metadata(batch, task, task_ids, findings)
+        _audit_issue_packet_sections(task, findings)
+        _audit_source_paths(batch, task, findings)
+
+    planned_cycles = sorted({task.cycle for task in batch.tasks if task.cycle})
+    status = "FAIL" if findings else ("PASS_WITH_PLANNED_CREATES" if planned_cycles else "PASS")
+    result = BatchAuditResult(
+        status=status,
+        batch_id=batch.batch_id,
+        task_count=len(batch.tasks),
+        planned_cycle_creates=planned_cycles if status != "FAIL" else [],
+        findings=findings,
+    )
+    if write_generated:
+        _write_generated_files(batch.path, result, batch)
+    return result
+
+
+def _audit_batch_metadata(batch: TaskIssueBatch, findings: list[AuditFinding]) -> None:
+    if batch.path.name != batch.batch_id:
+        findings.append(
+            AuditFinding(
+                code="batch_id",
+                message=f"batch_id must match directory name: {batch.batch_id} != {batch.path.name}",
+                path=str(batch.batch_doc.path),
+            )
+        )
+    for key in ("batch_id", "program_id", "program_prefix", "title", "status"):
+        if not batch.batch_doc.metadata.get(key):
+            findings.append(
+                AuditFinding(
+                    code="batch_metadata",
+                    message=f"batch.md missing required metadata: {key}",
+                    path=str(batch.batch_doc.path),
+                )
+            )
+
+
+def _audit_task_metadata(
+    batch: TaskIssueBatch,
+    task: TaskIssueDraft,
+    task_ids: set[str],
+    findings: list[AuditFinding],
+) -> None:
+    if task.path.stem != task.task_id:
+        findings.append(
+            AuditFinding(
+                code="task_filename",
+                message=f"task_id must match file name: {task.task_id} != {task.path.stem}",
+                path=str(task.path),
+            )
+        )
+    match = TASK_ID_RE.match(task.task_id)
+    if not match:
+        findings.append(
+            AuditFinding(
+                code="task_id",
+                message=f"task_id does not follow batch-native scheme: {task.task_id}",
+                path=str(task.path),
+            )
+        )
+        return
+    if match.group("batch") != batch.batch_id:
+        findings.append(
+            AuditFinding(
+                code="task_batch",
+                message=f"task_id batch segment must match batch_id: {task.task_id}",
+                path=str(task.path),
+            )
+        )
+    if match.group("program") != batch.program_prefix:
+        findings.append(
+            AuditFinding(
+                code="task_program",
+                message=f"task_id program segment must match program_prefix: {task.task_id}",
+                path=str(task.path),
+            )
+        )
+    if int(match.group("seq")) != int(task.metadata.get("sequence", -1)):
+        findings.append(
+            AuditFinding(
+                code="task_sequence",
+                message=f"task_id sequence must match sequence metadata: {task.task_id}",
+                path=str(task.path),
+            )
+        )
+    if task.metadata.get("batch_id") != batch.batch_id:
+        findings.append(
+            AuditFinding(
+                code="task_batch",
+                message=f"task batch_id must match batch.md: {task.metadata.get('batch_id')}",
+                path=str(task.path),
+            )
+        )
+    if task.metadata.get("program_prefix") != batch.program_prefix:
+        findings.append(
+            AuditFinding(
+                code="task_program",
+                message=f"task program_prefix must match batch.md: {task.metadata.get('program_prefix')}",
+                path=str(task.path),
+            )
+        )
+    if task.module not in FIXED_MODULE_TAXONOMY:
+        findings.append(
+            AuditFinding(
+                code="module",
+                message=f"task module is not in fixed taxonomy: {task.module}",
+                path=str(task.path),
+            )
+        )
+    for dep in _list_value(task.metadata.get("depends_on")):
+        if dep not in task_ids:
+            findings.append(
+                AuditFinding(
+                    code="dependency",
+                    message=f"depends_on does not reference a same-batch task: {dep}",
+                    path=str(task.path),
+                )
+            )
+
+
+def _audit_issue_packet_sections(task: TaskIssueDraft, findings: list[AuditFinding]) -> None:
+    last_index = -1
+    for section in REQUIRED_ISSUE_PACKET_SECTIONS:
+        if section not in task.sections:
+            findings.append(
+                AuditFinding(
+                    code="section_missing",
+                    message=f"missing required Issue Packet section: {section}",
+                    path=str(task.path),
+                )
+            )
+            continue
+        if not task.sections[section].strip():
+            findings.append(
+                AuditFinding(
+                    code="section_empty",
+                    message=f"required Issue Packet section is empty: {section}",
+                    path=str(task.path),
+                )
+            )
+        current_index = list(task.sections).index(section)
+        if current_index < last_index:
+            findings.append(
+                AuditFinding(
+                    code="section_order",
+                    message=f"Issue Packet section order is invalid near: {section}",
+                    path=str(task.path),
+                )
+            )
+        last_index = current_index
+
+
+def _audit_source_paths(batch: TaskIssueBatch, task: TaskIssueDraft, findings: list[AuditFinding]) -> None:
+    for key in ("source_pages", "source_docs", "source_summaries"):
+        values = _list_value(task.metadata.get(key))
+        if not values:
+            findings.append(
+                AuditFinding(
+                    code="source_missing",
+                    message=f"task must declare at least one {key} entry",
+                    path=str(task.path),
+                )
+            )
+        for value in values:
+            resolved = _resolve_source_path(batch, task, value)
+            if not resolved.exists():
+                findings.append(
+                    AuditFinding(
+                        code="source_not_found",
+                        message=f"{key} path does not exist: {value}",
+                        path=str(task.path),
+                    )
+                )
+
+
+def _resolve_source_path(batch: TaskIssueBatch, task: TaskIssueDraft, value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    if value.startswith("."):
+        return (task.path.parent / path).resolve()
+    return (batch.repo_root / path).resolve()
+
+
+def _list_value(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def _write_generated_files(batch_dir: Path, result: BatchAuditResult, batch: TaskIssueBatch | None) -> None:
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    (batch_dir / "audit-report.md").write_text(_render_audit_report(result), encoding="utf-8")
+    (batch_dir / "submit-preview.md").write_text(_render_submit_preview(result, batch), encoding="utf-8")
+
+
+def _render_audit_report(result: BatchAuditResult) -> str:
+    lines = [
+        "# Batch Audit Report",
+        "",
+        f"- Status: {result.status}",
+        f"- Batch: {result.batch_id}",
+        f"- Task count: {result.task_count}",
+    ]
+    if result.planned_cycle_creates:
+        lines.append(f"- Planned cycle creates: {', '.join(result.planned_cycle_creates)}")
+    lines.extend(["", "## Findings", ""])
+    if result.findings:
+        for finding in result.findings:
+            location = f" ({finding.path})" if finding.path else ""
+            lines.append(f"- [{finding.severity}] {finding.code}: {finding.message}{location}")
+    else:
+        lines.append("- None")
+    return "\n".join(lines) + "\n"
+
+
+def _render_submit_preview(result: BatchAuditResult, batch: TaskIssueBatch | None) -> str:
+    lines = [
+        "# Submit Preview",
+        "",
+        f"- Status: {result.status}",
+        f"- Batch: {result.batch_id}",
+        "",
+        "## Planned Plane Writes",
+        "",
+        "- Program Page: create or append batch history",
+        "- Batch Page: create immutable batch page",
+        "- Root Epic Issue: create",
+        f"- Task Issues: {result.task_count}",
+    ]
+    if result.planned_cycle_creates:
+        lines.extend(["", "## Planned Cycle Creates", ""])
+        lines.extend(f"- {cycle}" for cycle in result.planned_cycle_creates)
+    if batch:
+        lines.extend(["", "## Task Issues", ""])
+        lines.extend(f"- {task.task_id}: {task.title}" for task in batch.tasks)
+        lines.extend(["", f"Preview Hash: sha256:{_preview_hash(batch, result)}"])
+    return "\n".join(lines) + "\n"
+
+
+def _preview_hash(batch: TaskIssueBatch, result: BatchAuditResult) -> str:
+    digest = hashlib.sha256()
+    digest.update(batch.batch_doc.body.encode("utf-8"))
+    digest.update(batch.program_page.body.encode("utf-8"))
+    for task in batch.tasks:
+        digest.update(task.body.encode("utf-8"))
+    digest.update(str(asdict(result)).encode("utf-8"))
+    return digest.hexdigest()

@@ -513,45 +513,10 @@ def _format_stream_line(line: str) -> str | None:
     try:
         evt = json.loads(line)
     except (json.JSONDecodeError, TypeError):
-        raw = str(line).strip()
-        return f"∙ {raw}" if raw else None
+        return None
 
     evt_type = evt.get("type", "")
     subtype = evt.get("subtype", "")
-
-    # --- Codex exec JSON events ------------------------------------------
-    if evt_type in ("thread.started", "turn.started"):
-        return f"◈ {evt_type}"
-
-    if evt_type in ("item.started", "item.completed"):
-        item = evt.get("item") if isinstance(evt.get("item"), dict) else {}
-        item_type = item.get("type", "")
-
-        if item_type == "agent_message":
-            text = str(item.get("text", ""))
-            stripped = text.strip()
-            if stripped:
-                return f"▸ {stripped}"
-            return None
-
-        if item_type == "command_execution":
-            command = str(item.get("command", "")).strip()
-            if evt_type == "item.started":
-                return f"▶ command  |  {command}" if command else "▶ command"
-
-            output = str(item.get("aggregated_output", "") or "")
-            rc = item.get("exit_code")
-            status = item.get("status", "")
-            rc_label = f"rc={rc}" if rc is not None else str(status or "done")
-            stripped_output = output.rstrip()
-            if stripped_output:
-                return f"✓ command {rc_label}\n{stripped_output}"
-            return f"✓ command {rc_label}\n{command}" if command else f"✓ command {rc_label}"
-
-        if item_type:
-            item_id = str(item.get("id", ""))[:12]
-            verb = "▶" if evt_type == "item.started" else "✓"
-            return f"{verb} {item_type} {item_id}".rstrip()
 
     # --- system events ---------------------------------------------------
     if evt_type == "system":

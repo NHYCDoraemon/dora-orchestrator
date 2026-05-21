@@ -15,13 +15,6 @@ import json
 from .project_config import ProjectConfig
 
 
-def _format_progress_log(event: str, data: dict) -> str:
-    if event == "executor_output":
-        summary = data.get("summary")
-        return str(summary) if summary is not None else ""
-    return json.dumps({"event": event, **data}, ensure_ascii=False)
-
-
 def build_single_op(cfg: ProjectConfig):
     """Return the single orchestrator op for *cfg*.
 
@@ -85,7 +78,7 @@ def build_single_op(cfg: ProjectConfig):
         )
 
         def _log_progress(event: str, data: dict) -> None:
-            context.log.info(_format_progress_log(event, data))
+            context.log.info(json.dumps({"event": event, **data}, ensure_ascii=False))
 
         result = run_ready_batch_task(
             config,

@@ -1,0 +1,15 @@
+{
+  "doc_root": "docs/dora",
+  "module_taxonomy": [
+    "product",
+    "architecture",
+    "planning",
+    "implementation",
+    "verification",
+    "operations",
+    "governance"
+  ],
+  "orchestration_spec": ".dora/orchestration.json",
+  "project_slug": "orchestrator",
+  "title": "Dora Orchestrator"
+}

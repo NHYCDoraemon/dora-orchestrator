@@ -5,7 +5,7 @@ from pathlib import Path
 
 from orchestrator.config import OrchestratorConfig
 from orchestrator.in_memory_plane import InMemoryPlaneClient
-from orchestrator.run_ready_task import run_ready_batch_task
+from orchestrator.run_ready_task import _format_stream_line, run_ready_batch_task
 
 
 def _seed_batch_state(client: InMemoryPlaneClient) -> None:
@@ -38,6 +38,63 @@ def _seed_batch_state(client: InMemoryPlaneClient) -> None:
 
 
 class RunReadyBatchTaskTest(unittest.TestCase):
+    def test_formats_codex_agent_messages(self):
+        message = "I will inspect the repository first.\nThen edit."
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": "item_1",
+                "type": "agent_message",
+                "text": message,
+            },
+        })
+
+        self.assertEqual(
+            _format_stream_line(line),
+            f"▸ {message}",
+        )
+
+    def test_formats_codex_command_execution(self):
+        command = "/bin/zsh -lc 'git status --short && git diff --stat -- src/main/java/example/VeryLongFileName.java'"
+        output = " M src/App.java\n?? docs/note.md\n"
+        started = json.dumps({
+            "type": "item.started",
+            "item": {
+                "id": "item_2",
+                "type": "command_execution",
+                "command": command,
+                "status": "in_progress",
+            },
+        })
+        completed = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "id": "item_2",
+                "type": "command_execution",
+                "command": command,
+                "aggregated_output": output,
+                "exit_code": 0,
+                "status": "completed",
+            },
+        })
+
+        self.assertEqual(
+            _format_stream_line(started),
+            f"▶ command  |  {command}",
+        )
+        self.assertEqual(
+            _format_stream_line(completed),
+            f"✓ command rc=0\n{output.rstrip()}",
+        )
+
+    def test_formats_codex_plain_stderr(self):
+        line = "2026-05-19T09:45:43.080724Z ERROR codex_models_manager::manager: failed"
+
+        self.assertEqual(
+            _format_stream_line(line),
+            "∙ 2026-05-19T09:45:43.080724Z ERROR codex_models_manager::manager: failed",
+        )
+
     def test_skips_root_epic_and_runs_first_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = InMemoryPlaneClient()

@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: orchestrator
+Version: 0.1.0
+Summary: Dagster-first orchestration platform for autonomous engineering workflows
+Requires-Python: >=3.10
+Provides-Extra: dagster
+Requires-Dist: dagster>=1.8; extra == "dagster"
