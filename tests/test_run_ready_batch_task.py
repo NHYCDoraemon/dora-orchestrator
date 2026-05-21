@@ -45,6 +45,7 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
                 project_title="Dora",
             )
@@ -70,6 +71,7 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
                 project_title="Dora",
             )
@@ -95,6 +97,7 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
 
@@ -133,6 +136,7 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
 
@@ -159,6 +163,7 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
 
@@ -169,6 +174,57 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
 
 
 class RunReadyBatchTaskLoopTest(unittest.TestCase):
+    def test_generated_batches_run_by_batch_then_task_sequence_before_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260502A-T01", {
+                "name": "Later batch urgent", "issue_type": "task", "priority": "P1",
+                "depends_on": [], "agent_hint": "noop",
+            })
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T02", {
+                "name": "Earlier batch task 2", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Earlier batch task 1", "issue_type": "task", "priority": "P3",
+                "depends_on": [], "agent_hint": "noop",
+            })
+
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                executor="",
+                project_slug="dora",
+            )
+            result = run_ready_batch_task(
+                config,
+                plane_client=client,
+                run_id="strict-1",
+                max_loops=2,
+            )
+
+            self.assertEqual(
+                [run["external_id"] for run in result["runs"]],
+                ["DORA-PLN-20260501B-T01", "DORA-PLN-20260501B-T02"],
+            )
+            self.assertEqual(client.issues[("dora", "DORA-PLN-20260502A-T01")]["state"], "Todo")
+
+    def test_generated_batch_waits_when_earliest_task_is_already_in_progress(self):
+        client = InMemoryPlaneClient()
+        client.upsert_project("dora", "Dora")
+        client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+            "name": "Earlier running", "issue_type": "task", "priority": "P3",
+            "depends_on": [], "agent_hint": "noop",
+        })
+        client.upsert_issue("dora", "DORA-PLN-20260501B-T02", {
+            "name": "Later ready", "issue_type": "task", "priority": "P1",
+            "depends_on": [], "agent_hint": "noop",
+        })
+        client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"] = "In Progress"
+
+        self.assertIsNone(client.next_ready_issue("dora"))
+
     def test_chains_through_multiple_tasks_in_one_call(self):
         """After T01 completes, T02 should be picked up automatically."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -189,6 +245,7 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
             result = run_ready_batch_task(config, plane_client=client, run_id="chain-1")
@@ -218,6 +275,7 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
             result = run_ready_batch_task(config, plane_client=client, run_id="deadlock-1")
@@ -261,6 +319,7 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
             events: list[tuple[str, dict]] = []
@@ -300,6 +359,7 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
             result = run_ready_batch_task(config, plane_client=client, run_id="cb-2")
@@ -323,6 +383,7 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
             config = OrchestratorConfig(
                 spec_path=Path(tmp) / "unused.json",
                 target_repo=Path(tmp).resolve(),
+                executor="",
                 project_slug="dora",
             )
             result = run_ready_batch_task(

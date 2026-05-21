@@ -117,7 +117,7 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(issue["id"], "issue-existing")
         self.assertNotIn(("PATCH", "/api/v1/workspaces/doraemon/projects/project-1/issues/issue-existing/"), api.calls)
 
-    def test_next_ready_issue_skips_root_epics_and_orders_by_priority(self):
+    def test_next_ready_issue_skips_root_epics_and_orders_generated_tasks_by_sequence(self):
         api = FakePlaneApi(
             states=[{"id": "state-backlog", "name": "Backlog"}],
             issues=[
@@ -160,8 +160,42 @@ class LivePlaneClientTest(unittest.TestCase):
         ready = client.next_ready_issue("dora")
 
         self.assertIsNotNone(ready)
-        # urgent < medium < low (priority rank), Root Epic excluded entirely.
-        self.assertEqual(ready["external_id"], "DORA-AGCORE-20260501C-T03")
+        # Generated batch tasks must follow T01..TNN order before priority.
+        # Root Epic is excluded entirely.
+        self.assertEqual(ready["external_id"], "DORA-AGCORE-20260501C-T01")
+
+    def test_next_ready_issue_waits_when_earliest_generated_task_is_in_progress(self):
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-todo", "name": "Todo"},
+                {"id": "state-in-progress", "name": "In Progress"},
+            ],
+            issues=[
+                {
+                    "id": "issue-running",
+                    "external_id": "DORA-AGCORE-20260501C-T01",
+                    "state": "state-in-progress",
+                    "priority": "low",
+                },
+                {
+                    "id": "issue-ready",
+                    "external_id": "DORA-AGCORE-20260501C-T02",
+                    "state": "state-todo",
+                    "priority": "urgent",
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        self.assertIsNone(client.next_ready_issue("dora"))
 
     def test_in_progress_held_by_other_agent_is_not_reclaimed(self):
         """Defensive stale-lock policy: an issue assigned to a different

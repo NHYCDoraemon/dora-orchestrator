@@ -3,19 +3,14 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from .issue_order import batch_sort_key, batch_task_order_key
+
 READY_STATES = {"Backlog", "Todo", "Blocked", "Partial"}
+TERMINAL_STATES = {"Done", "Cancelled"}
 
 
 def _deps_satisfied(issue: dict[str, Any], done: set[str]) -> bool:
     return all(dep in done for dep in issue.get("depends_on", []))
-
-
-def _batch_sort_key(external_id: str) -> str:
-    """Extract the batch-date segment (third dash-group) for chronological sort."""
-    parts = external_id.split("-")
-    if len(parts) >= 3:
-        return parts[2]
-    return external_id
 
 
 @dataclass
@@ -78,16 +73,20 @@ class InMemoryPlaneClient:
     def next_ready_issue(self, project_slug: str, *, exclude: set[str] | None = None) -> dict[str, Any] | None:
         self._refresh_blocked(project_slug)
         done = self._done_set(project_slug)
+        strict_head = self._strict_head_key(project_slug)
         candidates = []
         for (slug, external_id), issue in self.issues.items():
             if slug != project_slug or issue.get("state") not in READY_STATES:
                 continue
             if issue.get("issue_type") == "root_epic":
                 continue
+            order_key = batch_task_order_key(external_id)
+            if strict_head is not None and order_key != strict_head:
+                continue
             if exclude and external_id in exclude:
                 continue
             if _deps_satisfied(issue, done):
-                batch_key = _batch_sort_key(external_id)
+                batch_key = batch_sort_key(external_id)
                 candidates.append((issue.get("priority", ""), batch_key, external_id, issue))
         candidates.sort(key=lambda item: (item[0], item[1], item[2]))
         return candidates[0][3] if candidates else None
@@ -214,7 +213,7 @@ class InMemoryPlaneClient:
                 continue
             if modules_set is not None and str(issue.get("module") or "") not in modules_set:
                 continue
-            if batch is not None and _batch_sort_key(external_id) != batch:
+            if batch is not None and batch_sort_key(external_id) != batch:
                 continue
             results.append(issue)
         results.sort(key=lambda i: i.get("external_id", ""))
@@ -228,6 +227,18 @@ class InMemoryPlaneClient:
             for (slug, external_id), issue in self.issues.items()
             if slug == project_slug and issue.get("state") == "Done"
         }
+
+    def _strict_head_key(self, project_slug: str) -> tuple[str, int, str] | None:
+        keys: list[tuple[str, int, str]] = []
+        for (slug, external_id), issue in self.issues.items():
+            if slug != project_slug or issue.get("issue_type") == "root_epic":
+                continue
+            if issue.get("state") in TERMINAL_STATES:
+                continue
+            order_key = batch_task_order_key(external_id)
+            if order_key is not None:
+                keys.append(order_key)
+        return min(keys) if keys else None
 
     def _refresh_blocked(self, project_slug: str) -> None:
         """Re-evaluate every issue: Blocked↔Todo based on current Done set."""

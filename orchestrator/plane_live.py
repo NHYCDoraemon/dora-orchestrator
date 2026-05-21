@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .issue_order import batch_sort_key, batch_task_order_key
+
 
 @dataclass(frozen=True)
 class LivePlaneSettings:
@@ -164,16 +166,18 @@ class LivePlaneClient:
 
     def next_ready_issue(self, project_slug: str, *, exclude: set[str] | None = None) -> dict[str, Any] | None:
         states = {item["id"]: item["name"] for item in self.api.paginate_v1(f"{self.proj_v1}/states/")}
+        issues = list(self.api.paginate_v1(f"{self.proj_v1}/issues/"))
         done = {
             issue.get("external_id")
-            for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/")
+            for issue in issues
             if states.get(issue.get("state")) in {"Done", "Cancelled"}
         }
+        strict_head = _strict_head_key(issues, states)
         now_utc = datetime.now(timezone.utc)
         stale_timeout = self.settings.stale_lock_timeout_seconds
         candidates = []
         reclaimed = 0
-        for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
+        for issue in issues:
             state_name = states.get(issue.get("state"))
             if state_name is None:
                 continue
@@ -182,6 +186,9 @@ class LivePlaneClient:
                 continue
             # Root Epics are batch anchors, never directly executable.
             if external_id.endswith("-ROOT"):
+                continue
+            order_key = batch_task_order_key(external_id)
+            if strict_head is not None and order_key != strict_head:
                 continue
             if exclude and external_id in exclude:
                 continue
@@ -238,7 +245,7 @@ class LivePlaneClient:
                 if is_stale:
                     adapted["_stale_reclaim"] = True
                     reclaimed += 1
-                batch_key = _batch_sort_key(external_id)
+                batch_key = batch_sort_key(external_id)
                 candidates.append((_priority_sort_key(adapted.get("priority", "")), batch_key, external_id, adapted))
         if reclaimed:
             candidates.sort(key=lambda item: (item[0], item[1], item[2]))
@@ -431,7 +438,7 @@ class LivePlaneClient:
             state_name = state_id_to_name.get(issue.get("state")) or ""
             if states_set is not None and state_name not in states_set:
                 continue
-            if batch is not None and _batch_sort_key(external_id) != batch:
+            if batch is not None and batch_sort_key(external_id) != batch:
                 continue
             if module_member_ids is not None and str(issue.get("id") or "") not in module_member_ids:
                 continue
@@ -983,18 +990,18 @@ def _priority_sort_key(priority: str) -> int:
     return _PRIORITY_RANK.get(str(priority).lower(), len(_PRIORITY_RANK))
 
 
-def _batch_sort_key(external_id: str) -> str:
-    """Extract the batch-date segment from *external_id* for chronological sort.
-
-    External IDs have the form ``<PROJECT>-<PROGRAM>-<YYYYMMDDA>-T<NN>``.  The
-    third segment (e.g. ``20260501C``) encodes both date and daily sequence
-    letter, so lexicographic sort on it yields chronological order and keeps
-    older batches ahead of newer ones regardless of project-name prefix.
-    """
-    parts = external_id.split("-")
-    if len(parts) >= 3:
-        return parts[2]
-    return external_id
+def _strict_head_key(issues: list[dict[str, Any]], states: dict[str, str]) -> tuple[str, int, str] | None:
+    keys: list[tuple[str, int, str]] = []
+    for issue in issues:
+        external_id = issue.get("external_id") or ""
+        if not external_id or external_id.endswith("-ROOT"):
+            continue
+        if states.get(issue.get("state")) in {"Done", "Cancelled"}:
+            continue
+        order_key = batch_task_order_key(external_id)
+        if order_key is not None:
+            keys.append(order_key)
+    return min(keys) if keys else None
 
 
 def _project_identifier(slug: str) -> str:
