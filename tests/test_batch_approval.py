@@ -44,7 +44,7 @@ class BatchApprovalTest(unittest.TestCase):
             repo = Path(tmp)
             batch_dir = create_batch(repo)
             task = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
-            task.write_text(task.read_text(encoding="utf-8").replace("Do not change memory persistence.", ""), encoding="utf-8")
+            task.write_text(task.read_text(encoding="utf-8").replace("不修改记忆持久化逻辑。", ""), encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "failing audit"):
                 approve_task_issue_batch(batch_dir, repo_root=repo, approved_by="raymond")

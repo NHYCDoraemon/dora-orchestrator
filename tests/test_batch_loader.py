@@ -18,7 +18,7 @@ class BatchLoaderTest(unittest.TestCase):
             self.assertEqual(batch.program_page.path, (batch_dir / "program-page.md").resolve())
             self.assertEqual(len(batch.tasks), 1)
             self.assertEqual(batch.tasks[0].task_id, "DORA-CTX-20260501A-T01")
-            self.assertEqual(batch.tasks[0].sections["Scope"], "Allowed files: `internal/cognition/context/*`.")
+            self.assertEqual(batch.tasks[0].sections["Scope"], "允许修改：`internal/cognition/context/*`。")
 
 
 def create_batch(repo: Path) -> Path:
@@ -33,22 +33,22 @@ def create_batch(repo: Path) -> Path:
 batch_id: 20260501A
 program_id: dora-context-assembly
 program_prefix: CTX
-title: Dora Context Assembly Phase 4
+title: Dora 上下文装配第四阶段
 status: draft
 created_by: raymond
 created_at: 2026-05-01T21:30:00+08:00
 ---
 
-# Batch
+# 批次说明
 
-Build the context assembly hardening batch.
+建设上下文装配加固批次，确保开发任务可审计、可执行、可验收。
 """,
         encoding="utf-8",
     )
     (batch_dir / "program-page.md").write_text(
-        """# Program
+        """# 计划说明
 
-The program owns context assembly quality.
+本计划负责上下文装配质量、任务拆解和交付验收。
 """,
         encoding="utf-8",
     )
@@ -58,7 +58,7 @@ task_id: DORA-CTX-20260501A-T01
 id_scheme: batch-native
 legacy_refs:
   - S1.5-P4-01
-title: CLI context inspect surface
+title: CLI 上下文检查能力
 batch_id: 20260501A
 program_id: dora-context-assembly
 program_prefix: CTX
@@ -78,41 +78,41 @@ source_summaries:
 source_commits: []
 ---
 
-# Task Summary
+# 任务概要
 
-Add a CLI inspection surface for context assembly.
+为上下文装配增加 CLI 检查入口，便于开发人员快速确认上下文内容和来源。
 
-# Development Context
+# 开发背景
 
-Use the linked design document and summary as source context.
+以关联设计文档和历史总结为输入，保持现有上下文装配边界不变。
 
-# Scope
+# 范围
 
-Allowed files: `internal/cognition/context/*`.
+允许修改：`internal/cognition/context/*`。
 
-# Non-goals
+# 非目标
 
-Do not change memory persistence.
+不修改记忆持久化逻辑。
 
-# Implementation Detail
+# 实现要求
 
-Read the context assembler package and add focused tests.
+阅读上下文装配包，补充聚焦测试，并保持最小变更。
 
-# Acceptance
+# 验收标准
 
-`go test ./internal/cognition/...` passes.
+`go test ./internal/cognition/...` 执行通过。
 
-# Verification
+# 验证要求
 
-Run L1 and L2 checks listed in the task.
+执行任务中列出的 L1 和 L2 检查，并记录结果。
 
-# Stop Conditions
+# 停止条件
 
-Stop if the design doc contradicts ADR constraints.
+如果设计文档与 ADR 约束冲突，停止实现并记录阻塞。
 
-# Executor Prompt Contract
+# 执行器提示契约
 
-Read this packet, linked sources, and git history before editing.
+编辑前阅读本任务、关联来源和 git 历史，严格按任务范围执行。
 """,
         encoding="utf-8",
     )

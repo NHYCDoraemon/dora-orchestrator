@@ -35,7 +35,12 @@ class BatchSubmitTest(unittest.TestCase):
             task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
             self.assertEqual(root["issue_type"], "root_epic")
             self.assertEqual(task["parent_external_id"], "DORA-CTX-20260501A-ROOT")
-            self.assertIn("# Task Summary", task["body"])
+            self.assertEqual(client.pages[("dora", "program-dora-context-assembly")]["title"], "计划：dora-context-assembly")
+            self.assertEqual(client.pages[("dora", "batch-20260501A")]["title"], "批次：Dora 上下文装配第四阶段")
+            self.assertEqual(root["name"], "[批次] Dora 上下文装配第四阶段")
+            self.assertIn("# CLI 上下文检查能力", task["body"])
+            self.assertIn("## 任务概要", task["body"])
+            self.assertNotIn("# Task Summary", task["body"])
 
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -918,7 +918,12 @@ def _comment_html(body: str, *, marker: str | None = None, raw_html: bool = Fals
 
 
 def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
+    body = str(payload.get("body", "")).strip()
     lines = [
+        body,
+        "",
+        "## 系统元数据",
+        "",
         "---",
         f"external_id: {external_id}",
         f"external_source: dora-orchestrator",
@@ -932,7 +937,7 @@ def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
     lines.append("verification_level: " + ("[]" if not payload.get("verification_level") else ""))
     for level in payload.get("verification_level") or []:
         lines.append(f"  - {level}")
-    lines.extend(["---", "", str(payload.get("body", ""))])
+    lines.append("---")
     return "\n".join(lines).strip() + "\n"
 
 

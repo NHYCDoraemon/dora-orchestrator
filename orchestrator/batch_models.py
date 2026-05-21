@@ -16,6 +16,23 @@ REQUIRED_ISSUE_PACKET_SECTIONS = [
     "Executor Prompt Contract",
 ]
 
+SECTION_DISPLAY_TITLES = {
+    "Task Summary": "任务概要",
+    "Development Context": "开发背景",
+    "Scope": "范围",
+    "Non-goals": "非目标",
+    "Implementation Detail": "实现要求",
+    "Acceptance": "验收标准",
+    "Verification": "验证要求",
+    "Stop Conditions": "停止条件",
+    "Executor Prompt Contract": "执行器提示契约",
+}
+
+SECTION_TITLE_ALIASES = {
+    **{title: title for title in REQUIRED_ISSUE_PACKET_SECTIONS},
+    **{display: canonical for canonical, display in SECTION_DISPLAY_TITLES.items()},
+}
+
 FIXED_MODULE_TAXONOMY = {
     "product",
     "architecture",

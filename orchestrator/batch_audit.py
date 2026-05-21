@@ -17,6 +17,7 @@ from .batch_models import (
 
 
 TASK_ID_RE = re.compile(r"^(?P<project>[A-Z][A-Z0-9]*)-(?P<program>[A-Z][A-Z0-9]*)-(?P<batch>[0-9]{8}[A-Z])-T(?P<seq>[0-9]{2,3})$")
+HAN_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def audit_task_issue_batch(
@@ -40,10 +41,12 @@ def audit_task_issue_batch(
 
     findings: list[AuditFinding] = []
     _audit_batch_metadata(batch, findings)
+    _audit_batch_language(batch, findings)
     task_ids = {task.task_id for task in batch.tasks}
     for task in batch.tasks:
         _audit_task_metadata(batch, task, task_ids, findings)
         _audit_issue_packet_sections(task, findings)
+        _audit_task_language(task, findings)
         _audit_source_paths(batch, task, findings)
 
     planned_cycles = sorted({task.cycle for task in batch.tasks if task.cycle})
@@ -227,6 +230,29 @@ def _resolve_source_path(batch: TaskIssueBatch, task: TaskIssueDraft, value: str
     return (batch.repo_root / path).resolve()
 
 
+def _audit_batch_language(batch: TaskIssueBatch, findings: list[AuditFinding]) -> None:
+    _require_chinese("batch title must be Chinese-readable", batch.title, str(batch.batch_doc.path), findings)
+    _require_chinese("batch body must be Chinese-readable", batch.batch_doc.body, str(batch.batch_doc.path), findings)
+    _require_chinese(
+        "program page must be Chinese-readable",
+        batch.program_page.body,
+        str(batch.program_page.path),
+        findings,
+    )
+
+
+def _audit_task_language(task: TaskIssueDraft, findings: list[AuditFinding]) -> None:
+    _require_chinese("task title must be Chinese-readable", task.title, str(task.path), findings)
+    for section in REQUIRED_ISSUE_PACKET_SECTIONS:
+        body = task.sections.get(section, "")
+        _require_chinese(f"task section must be Chinese-readable: {section}", body, str(task.path), findings)
+
+
+def _require_chinese(message: str, text: str, path: str, findings: list[AuditFinding]) -> None:
+    if not HAN_RE.search(text or ""):
+        findings.append(AuditFinding(code="language", message=message, path=path))
+
+
 def _list_value(value: object) -> list[str]:
     if value is None:
         return []
@@ -245,45 +271,45 @@ def _write_generated_files(batch_dir: Path, result: BatchAuditResult, batch: Tas
 
 def _render_audit_report(result: BatchAuditResult) -> str:
     lines = [
-        "# Batch Audit Report",
+        "# 批次审计报告",
         "",
-        f"- Status: {result.status}",
-        f"- Batch: {result.batch_id}",
-        f"- Task count: {result.task_count}",
+        f"- 状态：{result.status}",
+        f"- 批次：{result.batch_id}",
+        f"- 任务数量：{result.task_count}",
     ]
     if result.planned_cycle_creates:
-        lines.append(f"- Planned cycle creates: {', '.join(result.planned_cycle_creates)}")
-    lines.extend(["", "## Findings", ""])
+        lines.append(f"- 计划创建周期：{', '.join(result.planned_cycle_creates)}")
+    lines.extend(["", "## 审计发现", ""])
     if result.findings:
         for finding in result.findings:
             location = f" ({finding.path})" if finding.path else ""
             lines.append(f"- [{finding.severity}] {finding.code}: {finding.message}{location}")
     else:
-        lines.append("- None")
+        lines.append("- 无")
     return "\n".join(lines) + "\n"
 
 
 def _render_submit_preview(result: BatchAuditResult, batch: TaskIssueBatch | None) -> str:
     lines = [
-        "# Submit Preview",
+        "# 提交预览",
         "",
-        f"- Status: {result.status}",
-        f"- Batch: {result.batch_id}",
+        f"- 状态：{result.status}",
+        f"- 批次：{result.batch_id}",
         "",
-        "## Planned Plane Writes",
+        "## 计划写入 Plane",
         "",
-        "- Program Page: create or append batch history",
-        "- Batch Page: create immutable batch page",
-        "- Root Epic Issue: create",
-        f"- Task Issues: {result.task_count}",
+        "- 计划页面：创建或追加批次历史",
+        "- 批次页面：创建不可变批次页面",
+        "- 根任务：创建批次根任务",
+        f"- 任务问题：{result.task_count}",
     ]
     if result.planned_cycle_creates:
-        lines.extend(["", "## Planned Cycle Creates", ""])
+        lines.extend(["", "## 计划创建周期", ""])
         lines.extend(f"- {cycle}" for cycle in result.planned_cycle_creates)
     if batch:
-        lines.extend(["", "## Task Issues", ""])
+        lines.extend(["", "## 任务问题", ""])
         lines.extend(f"- {task.task_id}: {task.title}" for task in batch.tasks)
-        lines.extend(["", f"Preview Hash: sha256:{_preview_hash(batch, result)}"])
+        lines.extend(["", f"预览哈希：sha256:{_preview_hash(batch, result)}"])
     return "\n".join(lines) + "\n"
 
 

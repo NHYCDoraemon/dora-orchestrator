@@ -27,8 +27,8 @@ class LivePlaneClientTest(unittest.TestCase):
             "dora",
             "DORA-CTX-20260501A-T01",
             {
-                "name": "CLI context inspect surface",
-                "body": "# Task Summary\n\nImplement it.",
+                "name": "CLI 上下文检查能力",
+                "body": "# CLI 上下文检查能力\n\n## 任务概要\n\n实现检查入口。",
                 "cycle": "S1.5 Phase 4",
                 "module": "implementation",
                 "priority": "P1",
@@ -46,6 +46,12 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(cycle["name"], "S1.5 Phase 4")
         self.assertEqual(page["name"], "Batch: 20260501A")
         self.assertEqual(issue["external_id"], "DORA-CTX-20260501A-T01")
+        self.assertIn("# CLI 上下文检查能力", api.issues[-1]["description_html"])
+        self.assertIn("## 系统元数据", api.issues[-1]["description_html"])
+        self.assertLess(
+            api.issues[-1]["description_html"].index("# CLI 上下文检查能力"),
+            api.issues[-1]["description_html"].index("## 系统元数据"),
+        )
         self.assertTrue(api.logged_in)
         self.assertIn(("POST", "/api/workspaces/doraemon/projects/project-1/pages/"), api.calls)
         self.assertIn(("POST", "/api/v1/workspaces/doraemon/projects/project-1/issues/"), api.calls)

@@ -7,6 +7,21 @@ from tests.test_batch_loader import create_batch
 
 
 class BatchAuditTest(unittest.TestCase):
+    def test_rejects_batch_without_chinese_management_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            task = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            text = task.read_text(encoding="utf-8")
+            text = text.replace("title: CLI 上下文检查能力", "title: CLI context inspect surface")
+            text = text.replace("为上下文装配增加 CLI 检查入口，便于开发人员快速确认上下文内容和来源。", "Add a CLI inspection surface.")
+            task.write_text(text, encoding="utf-8")
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "language" for finding in result.findings))
+
     def test_complete_batch_passes_and_writes_submit_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -19,14 +34,17 @@ class BatchAuditTest(unittest.TestCase):
             self.assertEqual(result.planned_cycle_creates, ["S1.5 Phase 4"])
             self.assertEqual(result.findings, [])
             self.assertTrue((batch_dir / "submit-preview.md").exists())
-            self.assertIn("DORA-CTX-20260501A-T01", (batch_dir / "submit-preview.md").read_text(encoding="utf-8"))
+            preview = (batch_dir / "submit-preview.md").read_text(encoding="utf-8")
+            self.assertIn("# 提交预览", preview)
+            self.assertIn("## 计划写入 Plane", preview)
+            self.assertIn("DORA-CTX-20260501A-T01", preview)
 
     def test_rejects_empty_required_issue_packet_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             batch_dir = create_batch(repo)
             task = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
-            task.write_text(task.read_text(encoding="utf-8").replace("Do not change memory persistence.", ""), encoding="utf-8")
+            task.write_text(task.read_text(encoding="utf-8").replace("不修改记忆持久化逻辑。", ""), encoding="utf-8")
 
             result = audit_task_issue_batch(batch_dir, repo_root=repo)
 

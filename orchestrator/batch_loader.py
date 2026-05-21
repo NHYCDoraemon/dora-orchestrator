@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from .batch_models import MarkdownDocument, TaskIssueBatch, TaskIssueDraft
+from .batch_models import MarkdownDocument, SECTION_TITLE_ALIASES, TaskIssueBatch, TaskIssueDraft
 
 
 SECTION_RE = re.compile(r"^# (?P<title>.+?)\s*$", re.MULTILINE)
@@ -122,6 +122,7 @@ def _split_sections(body: str) -> dict[str, str]:
     for index, match in enumerate(matches):
         start = match.end()
         end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        title = match.group("title").strip()
+        raw_title = match.group("title").strip()
+        title = SECTION_TITLE_ALIASES.get(raw_title, raw_title)
         sections[title] = body[start:end].strip()
     return sections

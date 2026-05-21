@@ -7,7 +7,13 @@ from pathlib import Path
 from .batch_audit import TASK_ID_RE, audit_task_issue_batch
 from .batch_hash import compute_batch_hash
 from .batch_loader import load_task_issue_batch
-from .batch_models import FIXED_MODULE_TAXONOMY, TaskIssueBatch, TaskIssueDraft
+from .batch_models import (
+    FIXED_MODULE_TAXONOMY,
+    REQUIRED_ISSUE_PACKET_SECTIONS,
+    SECTION_DISPLAY_TITLES,
+    TaskIssueBatch,
+    TaskIssueDraft,
+)
 
 
 def submit_task_issue_batch(
@@ -35,7 +41,7 @@ def submit_task_issue_batch(
         project_slug,
         f"program-{batch.program_id}",
         {
-            "title": f"Program: {batch.program_id}",
+            "title": f"计划：{batch.program_id}",
             "body": batch.program_page.body,
             "page_type": "program",
             "batch_id": batch.batch_id,
@@ -45,7 +51,7 @@ def submit_task_issue_batch(
         project_slug,
         f"batch-{batch.batch_id}",
         {
-            "title": f"Batch: {batch.title}",
+            "title": f"批次：{batch.title}",
             "body": _render_batch_page(batch),
             "page_type": "batch",
             "batch_id": batch.batch_id,
@@ -57,7 +63,7 @@ def submit_task_issue_batch(
         project_slug,
         root_external_id,
         {
-            "name": f"[Batch] {batch.title}",
+            "name": f"[批次] {batch.title}",
             "body": _render_root_epic_body(batch),
             "issue_type": "root_epic",
             "cycle": batch.tasks[0].cycle,
@@ -79,7 +85,7 @@ def submit_task_issue_batch(
             task.task_id,
             {
                 "name": task.title,
-                "body": task.body,
+                "body": _render_task_body(task),
                 "issue_type": "task",
                 "parent_external_id": root_external_id,
                 "cycle": task.cycle,
@@ -149,25 +155,35 @@ def _render_batch_page(batch: TaskIssueBatch) -> str:
 
 def _render_root_epic_body(batch: TaskIssueBatch) -> str:
     lines = [
-        "# Root Epic",
+        f"# 批次根任务：{batch.title}",
         "",
-        f"Batch: {batch.batch_id}",
-        f"Program: {batch.program_id}",
+        f"- 批次编号：`{batch.batch_id}`",
+        f"- 所属计划：`{batch.program_id}`",
+        f"- 任务数量：{len(batch.tasks)}",
         "",
-        "## Task Issues",
+        "## 任务列表",
         "",
     ]
     lines.extend(f"- {task.task_id}: {task.title}" for task in batch.tasks)
     lines.extend(
         [
             "",
-            "## Stop Conditions",
+            "## 停止条件",
             "",
-            "- Stop if batch approval hash no longer matches local contents.",
-            "- Stop if a task requires changing submitted issue history.",
+            "- 如果批次审批哈希与本地内容不一致，停止提交。",
+            "- 如果任务要求修改已提交的问题历史，停止提交并重新审批。",
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def _render_task_body(task: TaskIssueDraft) -> str:
+    lines = [f"# {task.title}", ""]
+    for section in REQUIRED_ISSUE_PACKET_SECTIONS:
+        title = SECTION_DISPLAY_TITLES[section]
+        body = task.sections.get(section, "").strip()
+        lines.extend([f"## {title}", "", body, ""])
+    return "\n".join(lines).strip() + "\n"
 
 
 def _parse_acceptance_bullets(section: str) -> list[str]:
