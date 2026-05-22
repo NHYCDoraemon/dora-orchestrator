@@ -172,7 +172,7 @@ class LivePlaneClient:
             for issue in issues
             if states.get(issue.get("state")) in {"Done", "Cancelled"}
         }
-        strict_head = _strict_head_key(issues, states)
+        strict_head = _strict_ready_head_key(issues, states, done)
         now_utc = datetime.now(timezone.utc)
         stale_timeout = self.settings.stale_lock_timeout_seconds
         candidates = []
@@ -995,7 +995,11 @@ def _priority_sort_key(priority: str) -> int:
     return _PRIORITY_RANK.get(str(priority).lower(), len(_PRIORITY_RANK))
 
 
-def _strict_head_key(issues: list[dict[str, Any]], states: dict[str, str]) -> tuple[str, int, str] | None:
+def _strict_ready_head_key(
+    issues: list[dict[str, Any]],
+    states: dict[str, str],
+    done: set[str],
+) -> tuple[str, int, str] | None:
     keys: list[tuple[str, int, str]] = []
     for issue in issues:
         external_id = issue.get("external_id") or ""
@@ -1005,7 +1009,9 @@ def _strict_head_key(issues: list[dict[str, Any]], states: dict[str, str]) -> tu
             continue
         order_key = batch_task_order_key(external_id)
         if order_key is not None:
-            keys.append(order_key)
+            deps = _extract_frontmatter_list(issue.get("description_html") or "", "depends_on")
+            if all(dep in done for dep in deps):
+                keys.append(order_key)
     return min(keys) if keys else None
 
 

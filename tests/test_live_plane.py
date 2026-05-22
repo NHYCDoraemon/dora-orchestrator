@@ -203,6 +203,51 @@ class LivePlaneClientTest(unittest.TestCase):
 
         self.assertIsNone(client.next_ready_issue("dora"))
 
+    def test_next_ready_issue_allows_later_dependency_before_blocked_lower_sequence(self):
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-backlog", "name": "Backlog"},
+                {"id": "state-todo", "name": "Todo"},
+                {"id": "state-done", "name": "Done"},
+            ],
+            issues=[
+                {
+                    "id": "issue-done",
+                    "external_id": "PFE-P1FE-20260522D-T01",
+                    "state": "state-done",
+                    "priority": "high",
+                },
+                {
+                    "id": "issue-blocked",
+                    "external_id": "PFE-P1FE-20260522D-T03",
+                    "state": "state-backlog",
+                    "priority": "urgent",
+                    "description_html": "<pre>depends_on:\n  - PFE-P1FE-20260522D-T11\n</pre>",
+                },
+                {
+                    "id": "issue-dependency",
+                    "external_id": "PFE-P1FE-20260522D-T11",
+                    "state": "state-todo",
+                    "priority": "medium",
+                    "description_html": "<pre>depends_on:\n  - PFE-P1FE-20260522D-T01\n</pre>",
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+
+        self.assertIsNotNone(ready)
+        self.assertEqual(ready["external_id"], "PFE-P1FE-20260522D-T11")
+
     def test_in_progress_held_by_other_agent_is_not_reclaimed(self):
         """Defensive stale-lock policy: an issue assigned to a different
         agent_uuid (or unassigned) is NEVER reclaimed, no matter the
