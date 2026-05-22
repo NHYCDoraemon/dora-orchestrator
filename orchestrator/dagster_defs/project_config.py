@@ -22,7 +22,9 @@ class ProjectConfig:
     plane_workspace_slug: str = ""
     schedule_cron: str = "*/2 * * * *"
     schedule_timezone: str = "Asia/Shanghai"
+    schedule_enabled: bool = False
     default_executor: str = "codex"
+    codex_home: Path = field(default_factory=lambda: Path.home() / ".codex")
     max_runtime_seconds: int = 3600
     git_branch_prefix: str = "orchestrator"
     git_base_branch: str = "main"

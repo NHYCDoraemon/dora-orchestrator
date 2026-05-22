@@ -24,6 +24,7 @@ class TaskRunContext:
     # Hard wall clock: if the subprocess hasn't exited after this many seconds
     # the process group is killed and the outcome is `agent_hard_timeout`.
     hard_timeout_seconds: int = 3600
+    extra_env: dict[str, str] = field(default_factory=dict)
     # Optional per-line streaming callback. Subprocess executors invoke this
     # for every stdout/stderr line so the caller (typically a Dagster op) can
     # mirror progress into a UI logger while the full stream is captured to

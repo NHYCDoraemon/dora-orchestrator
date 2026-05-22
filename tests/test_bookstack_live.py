@@ -92,6 +92,7 @@ class ClientUpsertTest(unittest.TestCase):
     def test_upsert_shelf_creates_when_absent(self):
         responses = [
             _FakeResponse({"data": []}),                                  # GET search → none
+            _FakeResponse({"data": []}),                                  # managed marker lookup → none
             _FakeResponse({"id": 7, "slug": "process-engine", "name": "PE"}),  # POST create
         ]
         with patch("orchestrator.bookstack_live.urllib.request.urlopen", side_effect=responses) as mock:
@@ -100,20 +101,85 @@ class ClientUpsertTest(unittest.TestCase):
         log = self._request_log(mock.call_args_list)
         self.assertEqual(log[0][0], "GET")
         self.assertIn("/api/shelves", log[0][1])
-        self.assertEqual(log[1][0], "POST")
-        self.assertEqual(log[1][2]["slug"], "process-engine")
+        self.assertEqual(log[1][0], "GET")
+        self.assertIn("query=PE", log[1][1])
+        self.assertEqual(log[2][0], "POST")
+        self.assertEqual(log[2][2]["slug"], "process-engine")
 
     def test_upsert_shelf_updates_when_present(self):
         responses = [
             _FakeResponse({"data": [{"id": 9, "slug": "process-engine", "name": "old"}]}),
+            _FakeResponse({"data": []}),  # managed marker lookup → no duplicates
             _FakeResponse({"id": 9, "slug": "process-engine", "name": "PE new"}),
         ]
         with patch("orchestrator.bookstack_live.urllib.request.urlopen", side_effect=responses) as mock:
             out = self.client.upsert_shelf(name="PE new", slug="process-engine")
         self.assertEqual(out["id"], 9)
         log = self._request_log(mock.call_args_list)
-        self.assertEqual(log[1][0], "PUT")
-        self.assertEqual(log[1][1], "/api/shelves/9")
+        self.assertEqual(log[2][0], "PUT")
+        self.assertEqual(log[2][1], "/api/shelves/9")
+
+    def test_upsert_shelf_reuses_managed_shelf_when_bookstack_ignored_slug(self):
+        description = "Design docs synced from /tmp/docs/dora (project=process-frontend)"
+        responses = [
+            _FakeResponse({"data": []}),  # slug lookup misses because BookStack auto-slugged
+            _FakeResponse({
+                "data": [
+                    {
+                        "id": 221,
+                        "slug": "processenginefrontend",
+                        "name": "ProcessEngineFrontend",
+                        "description": description,
+                    },
+                ]
+            }),
+            _FakeResponse({"id": 221, "slug": "processenginefrontend", "name": "ProcessEngineFrontend"}),
+        ]
+        with patch("orchestrator.bookstack_live.urllib.request.urlopen", side_effect=responses) as mock:
+            out = self.client.upsert_shelf(
+                name="ProcessEngineFrontend",
+                slug="process-frontend",
+                description=description,
+            )
+
+        self.assertEqual(out["id"], 221)
+        log = self._request_log(mock.call_args_list)
+        self.assertEqual(log[0][0], "GET")
+        self.assertIn("filter%5Bslug%5D=process-frontend", log[0][1])
+        self.assertEqual(log[1][0], "GET")
+        self.assertIn("ProcessEngineFrontend", log[1][1])
+        self.assertEqual(log[2][0], "PUT")
+        self.assertEqual(log[2][1], "/api/shelves/221")
+
+    def test_upsert_shelf_merges_duplicate_managed_shelves(self):
+        description = "Design docs synced from /tmp/docs/dora (project=process-frontend)"
+        responses = [
+            _FakeResponse({"data": []}),  # slug lookup misses
+            _FakeResponse({
+                "data": [
+                    {"id": 221, "name": "ProcessEngineFrontend", "description": description},
+                    {"id": 224, "name": "ProcessEngineFrontend", "description": description},
+                ]
+            }),
+            _FakeResponse({"id": 221, "books": [{"id": 10}, {"id": 11}]}),
+            _FakeResponse({"id": 224, "books": [{"id": 11}, {"id": 12}]}),
+            _FakeResponse({"id": 221, "slug": "processenginefrontend", "name": "ProcessEngineFrontend"}),
+            _FakeResponse(None, status=204),
+        ]
+        with patch("orchestrator.bookstack_live.urllib.request.urlopen", side_effect=responses) as mock:
+            out = self.client.upsert_shelf(
+                name="ProcessEngineFrontend",
+                slug="process-frontend",
+                description=description,
+            )
+
+        self.assertEqual(out["id"], 221)
+        log = self._request_log(mock.call_args_list)
+        self.assertEqual(log[4][0], "PUT")
+        self.assertEqual(log[4][1], "/api/shelves/221")
+        self.assertEqual(log[4][2]["books"], [10, 11, 12])
+        self.assertEqual(log[5][0], "DELETE")
+        self.assertEqual(log[5][1], "/api/shelves/224")
 
     def test_upsert_page_lookup_by_name_then_post(self):
         responses = [
@@ -163,6 +229,53 @@ class ClientUpsertTest(unittest.TestCase):
         self.assertEqual(log[0][1], "/api/shelves/35")
         self.assertEqual(log[1][0], "PUT")
         self.assertEqual(log[1][1], "/api/books/13")
+
+    def test_upsert_book_merges_duplicate_books_on_shelf(self):
+        responses = [
+            _FakeResponse({"id": 35, "name": "Process Engine", "books": [
+                {"id": 222, "name": "dora"},
+                {"id": 237, "name": "dora"},
+                {"id": 240, "name": "dora"},
+                {"id": 300, "name": "产品"},
+            ]}),
+            _FakeResponse({"data": [
+                {"id": 238, "name": "planning", "slug": "planning"},
+            ]}),
+            _FakeResponse({"id": 238, "name": "planning", "markdown": "### Planning\n"}),
+            _FakeResponse({"data": []}),
+            _FakeResponse({"id": 501, "name": "planning", "slug": "planning"}),
+            _FakeResponse(None, status=204),
+            _FakeResponse({"data": [
+                {"id": 241, "name": "quality", "slug": "quality"},
+            ]}),
+            _FakeResponse({"id": 241, "name": "quality", "markdown": "### Quality\n"}),
+            _FakeResponse({"data": []}),
+            _FakeResponse({"id": 502, "name": "quality", "slug": "quality"}),
+            _FakeResponse(None, status=204),
+            _FakeResponse({"id": 35}),
+            _FakeResponse(None, status=204),
+            _FakeResponse(None, status=204),
+            _FakeResponse({"id": 222, "name": "dora"}),
+        ]
+        with patch("orchestrator.bookstack_live.urllib.request.urlopen", side_effect=responses) as mock:
+            out = self.client.upsert_book(shelf_id=35, name="dora")
+
+        self.assertEqual(out["id"], 222)
+        log = self._request_log(mock.call_args_list)
+        self.assertEqual(log[4][0], "POST")
+        self.assertEqual(log[4][1], "/api/pages")
+        self.assertEqual(log[4][2]["book_id"], 222)
+        self.assertEqual(log[5], ("DELETE", "/api/pages/238", None))
+        self.assertEqual(log[9][0], "POST")
+        self.assertEqual(log[9][2]["book_id"], 222)
+        self.assertEqual(log[10], ("DELETE", "/api/pages/241", None))
+        self.assertEqual(log[11][0], "PUT")
+        self.assertEqual(log[11][1], "/api/shelves/35")
+        self.assertEqual(log[11][2]["books"], [222, 300])
+        self.assertEqual(log[12], ("DELETE", "/api/books/237", None))
+        self.assertEqual(log[13], ("DELETE", "/api/books/240", None))
+        self.assertEqual(log[14][0], "PUT")
+        self.assertEqual(log[14][1], "/api/books/222")
 
     def test_upsert_book_creates_and_attaches(self):
         responses = [

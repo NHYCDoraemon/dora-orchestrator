@@ -18,10 +18,12 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 from orchestrator.executor_protocol import ExecutorResult, TaskRunContext
 
@@ -50,7 +52,7 @@ class ClaudeExecutor:
             else ""
         )
         return [
-            "claude",
+            _resolve_claude_binary(),
             "--print",
             "--dangerously-skip-permissions",
             "--output-format",
@@ -69,6 +71,7 @@ class ClaudeExecutor:
             "PYTHONUNBUFFERED": "1",
             "CLAUDE_CODE_NON_INTERACTIVE": "1",
             "CLAUDE_CODE_DANGEROUSLY_SKIP_PERMISSIONS": "1",
+            **context.extra_env,
         }
         rc = _stream_subprocess(
             self.build_command(context),
@@ -91,6 +94,24 @@ class ClaudeExecutor:
             summary=summary,
             touched_files=[],
         )
+
+
+def _resolve_claude_binary(path_env: str | None = None, extra_dirs: list[Path] | None = None) -> str:
+    path_env = os.environ.get("PATH", "") if path_env is None else path_env
+    found = shutil.which("claude", path=path_env)
+    if found:
+        return found
+
+    dirs = extra_dirs or [
+        Path.home() / ".local" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ]
+    for directory in dirs:
+        candidate = directory / "claude"
+        if candidate.exists():
+            return str(candidate)
+    return "claude"
 
 
 def _claude_result_text(event_path) -> str:

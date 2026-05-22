@@ -61,8 +61,10 @@ class LoaderTest(unittest.TestCase):
                         "repo_root": "/tmp/foo",
                         "schedule_cron": "*/15 * * * *",
                         "default_executor": "claude",
+                        "codex_home": "/tmp/codex-home",
                         "enable_push": True,
                         "enable_pr": True,
+                        "schedule_enabled": True,
                         "max_runtime_seconds": 7200,
                     }
                 ),
@@ -73,8 +75,10 @@ class LoaderTest(unittest.TestCase):
 
         self.assertEqual(configs[0].schedule_cron, "*/15 * * * *")
         self.assertEqual(configs[0].default_executor, "claude")
+        self.assertEqual(configs[0].codex_home, Path("/tmp/codex-home"))
         self.assertTrue(configs[0].enable_push)
         self.assertTrue(configs[0].enable_pr)
+        self.assertTrue(configs[0].schedule_enabled)
         self.assertEqual(configs[0].max_runtime_seconds, 7200)
 
     def test_load_skips_invalid_files_without_failing_others(self):
@@ -102,6 +106,7 @@ class FactoryDefinitionsTest(unittest.TestCase):
             self.skipTest("dagster not installed")
 
     def test_build_project_defs_emits_named_job_schedule_and_assets(self):
+        from dagster import DefaultScheduleStatus
         from orchestrator.dagster_defs import ProjectConfig, build_project_defs
 
         defs = build_project_defs(
@@ -122,6 +127,8 @@ class FactoryDefinitionsTest(unittest.TestCase):
         # Cron-derived label
         for sn in schedule_names:
             self.assertTrue(sn.startswith("example_every_"))
+        schedule_defs = defs.get_repository_def().schedule_defs
+        self.assertEqual(schedule_defs[0].default_status, DefaultScheduleStatus.STOPPED)
 
         asset_keys = {
             ak.to_user_string()
@@ -130,6 +137,23 @@ class FactoryDefinitionsTest(unittest.TestCase):
         self.assertIn("example_status", asset_keys)
         self.assertIn("example_reset_lease", asset_keys)
         self.assertIn("example_worktrees", asset_keys)
+
+    def test_build_project_defs_can_enable_schedule_by_config(self):
+        from dagster import DefaultScheduleStatus
+        from orchestrator.dagster_defs import ProjectConfig, build_project_defs
+
+        defs = build_project_defs(
+            ProjectConfig(
+                slug="frontend",
+                title="Frontend",
+                repo_root=Path("/tmp/frontend"),
+                schedule_enabled=True,
+            )
+        )
+
+        schedule_defs = defs.get_repository_def().schedule_defs
+        self.assertEqual(len(schedule_defs), 1)
+        self.assertEqual(schedule_defs[0].default_status, DefaultScheduleStatus.RUNNING)
 
     def test_build_orchestrated_projects_defs_merges_multiple_projects(self):
         from orchestrator.dagster_defs import build_orchestrated_projects_defs
@@ -184,43 +208,16 @@ class ProbeNextReadyTest(unittest.TestCase):
         from orchestrator.dagster_defs import factory
 
         fake = type("F", (), {"next_ready_issue": lambda self, slug: {"external_id": "DOR-X-20260101A-T01"}})()
-        with patch.object(factory, "LivePlaneClient", create=True, return_value=fake), \
-             patch.object(factory, "LivePlaneSettings", create=True):
-            # Force the import path through the function (it imports lazily)
-            import sys
-            stub = sys.modules.get("orchestrator.plane_live")
-            try:
-                # Inject our fake into the lazy-imported module attrs.
-                import types as _types
-                fake_module = _types.SimpleNamespace(
-                    LivePlaneClient=lambda settings: fake,
-                    LivePlaneSettings=_types.SimpleNamespace(from_env=lambda: None),
-                )
-                sys.modules["orchestrator.plane_live"] = fake_module
-                self.assertEqual(factory._probe_next_ready(self._cfg()), "DOR-X-20260101A-T01")
-            finally:
-                if stub is not None:
-                    sys.modules["orchestrator.plane_live"] = stub
-                else:
-                    sys.modules.pop("orchestrator.plane_live", None)
+        with patch("orchestrator.dagster_defs.plane_helpers.per_project_plane_client", return_value=fake):
+            self.assertEqual(factory._probe_next_ready(self._cfg()), "DOR-X-20260101A-T01")
 
     def test_probe_returns_none_when_plane_empty(self):
-        import sys, types as _types
+        from unittest.mock import patch
         from orchestrator.dagster_defs import factory
 
-        fake_module = _types.SimpleNamespace(
-            LivePlaneClient=lambda settings: _types.SimpleNamespace(next_ready_issue=lambda slug: None),
-            LivePlaneSettings=_types.SimpleNamespace(from_env=lambda: None),
-        )
-        stub = sys.modules.get("orchestrator.plane_live")
-        sys.modules["orchestrator.plane_live"] = fake_module
-        try:
+        fake = type("F", (), {"next_ready_issue": lambda self, slug: None})()
+        with patch("orchestrator.dagster_defs.plane_helpers.per_project_plane_client", return_value=fake):
             self.assertIsNone(factory._probe_next_ready(self._cfg()))
-        finally:
-            if stub is not None:
-                sys.modules["orchestrator.plane_live"] = stub
-            else:
-                sys.modules.pop("orchestrator.plane_live", None)
 
     def test_probe_returns_failed_sentinel_on_exception(self):
         import sys, types as _types

@@ -75,7 +75,11 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
         cron_schedule=cfg.schedule_cron,
         job=run_job,
         execution_timezone=cfg.schedule_timezone,
-        default_status=DefaultScheduleStatus.STOPPED,
+        default_status=(
+            DefaultScheduleStatus.RUNNING
+            if cfg.schedule_enabled
+            else DefaultScheduleStatus.STOPPED
+        ),
         description=(
             f"Every {cfg.schedule_cron}: skip if any active run for "
             f"{job_name} exists OR if Plane has no ready issue; otherwise "

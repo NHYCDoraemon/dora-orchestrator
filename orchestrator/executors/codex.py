@@ -71,6 +71,7 @@ class CodexExecutor:
             "DEBIAN_FRONTEND": "noninteractive",
             "GIT_TERMINAL_PROMPT": "0",
             "PYTHONUNBUFFERED": "1",
+            **context.extra_env,
         }
         rc = _stream_subprocess(
             self.build_command(context),

@@ -2,8 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from orchestrator.config import OrchestratorConfig
+from orchestrator.executor_protocol import ExecutorResult
+from orchestrator.executors.claude import _resolve_claude_binary
 from orchestrator.in_memory_plane import InMemoryPlaneClient
 from orchestrator.run_ready_task import _format_stream_line, run_ready_batch_task
 
@@ -95,6 +98,44 @@ class RunReadyBatchTaskTest(unittest.TestCase):
             "∙ 2026-05-19T09:45:43.080724Z ERROR codex_models_manager::manager: failed",
         )
 
+    def test_formats_claude_assistant_text_and_thinking(self):
+        line = json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "text": "I need to inspect the repo first."},
+                    {"type": "text", "text": "I will update the executor configuration.\nThen verify."},
+                ],
+            },
+        })
+
+        self.assertEqual(
+            _format_stream_line(line),
+            "◉  I need to inspect the repo first.\n▸ I will update the executor configuration.",
+        )
+
+    def test_formats_claude_result_summary(self):
+        line = json.dumps({
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "\nDone with verification.\nSecond line.",
+        })
+
+        self.assertEqual(
+            _format_stream_line(line),
+            "★ success  |  Done with verification.",
+        )
+
+    def test_resolves_claude_from_extra_search_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            binary = bin_dir / "claude"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            self.assertEqual(_resolve_claude_binary("", [bin_dir]), str(binary))
+
     def test_skips_root_epic_and_runs_first_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             client = InMemoryPlaneClient()
@@ -118,6 +159,31 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Done")
         # ROOT rolls up from its sole child: all-Done → Done.
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-ROOT")]["state"], "Done")
+
+    def test_passes_executor_environment_to_executor_context(self):
+        seen = {}
+
+        class _FakeExecutor:
+            def run(self, context):
+                seen["extra_env"] = context.extra_env
+                return ExecutorResult("agent_done", "done", [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            _seed_batch_state(client)
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                executor="codex",
+                project_slug="dora",
+                project_title="Dora",
+                executor_env={"CODEX_HOME": "/tmp/codex-home"},
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()):
+                run_ready_batch_task(config, plane_client=client, run_id="run-env")
+
+        self.assertEqual(seen["extra_env"], {"CODEX_HOME": "/tmp/codex-home"})
 
     def test_failing_verification_command_marks_partial_and_unverified(self):
         with tempfile.TemporaryDirectory() as tmp:

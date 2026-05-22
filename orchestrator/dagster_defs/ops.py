@@ -22,6 +22,12 @@ def _format_progress_log(event: str, data: dict) -> str:
     return json.dumps({"event": event, **data}, ensure_ascii=False)
 
 
+def _executor_env_for(executor: str, cfg: ProjectConfig) -> dict[str, str] | None:
+    if executor == "codex":
+        return {"CODEX_HOME": str(cfg.codex_home)}
+    return None
+
+
 def build_single_op(cfg: ProjectConfig):
     """Return the single orchestrator op for *cfg*.
 
@@ -53,13 +59,15 @@ def build_single_op(cfg: ProjectConfig):
 
         client = per_project_plane_client(cfg)
 
+        executor = os.environ.get("ORCHESTRATOR_EXECUTOR", cfg.default_executor)
         config = OrchestratorConfig(
             spec_path=cfg.repo_root / "examples" / "dora.orchestration.json",
             target_repo=cfg.repo_root,
-            executor=os.environ.get("ORCHESTRATOR_EXECUTOR", cfg.default_executor),
+            executor=executor,
             plane_backend=os.environ.get("ORCHESTRATOR_PLANE_BACKEND", "live"),
             project_slug=cfg.slug,
             project_title=cfg.title,
+            executor_env=_executor_env_for(executor, cfg),
         )
 
         batch_id = _batch_id_from_env() or ""

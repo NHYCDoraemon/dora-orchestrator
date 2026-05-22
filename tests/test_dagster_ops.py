@@ -1,7 +1,9 @@
 import json
 import unittest
+from pathlib import Path
 
-from orchestrator.dagster_defs.ops import _format_progress_log
+from orchestrator.dagster_defs.ops import _executor_env_for, _format_progress_log
+from orchestrator.dagster_defs.project_config import ProjectConfig
 
 
 class DagsterOpsProgressLogTest(unittest.TestCase):
@@ -32,3 +34,26 @@ class DagsterOpsProgressLogTest(unittest.TestCase):
             },
         )
 
+
+class DagsterOpsExecutorEnvTest(unittest.TestCase):
+    def test_claude_executor_does_not_receive_codex_home(self):
+        cfg = ProjectConfig(
+            slug="process-frontend",
+            title="ProcessEngineFrontend",
+            repo_root=Path("/tmp/process-frontend"),
+            default_executor="claude",
+            codex_home=Path("/tmp/codex-home"),
+        )
+
+        self.assertIsNone(_executor_env_for("claude", cfg))
+
+    def test_codex_executor_receives_codex_home(self):
+        cfg = ProjectConfig(
+            slug="process-frontend",
+            title="ProcessEngineFrontend",
+            repo_root=Path("/tmp/process-frontend"),
+            default_executor="codex",
+            codex_home=Path("/tmp/codex-home"),
+        )
+
+        self.assertEqual(_executor_env_for("codex", cfg), {"CODEX_HOME": "/tmp/codex-home"})

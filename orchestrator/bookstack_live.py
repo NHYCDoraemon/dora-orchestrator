@@ -71,13 +71,27 @@ class BookStackClient:
     # ── shelf ────────────────────────────────────────────────────────
 
     def upsert_shelf(self, name: str, slug: str, description: str = "") -> dict[str, Any]:
-        """Shelves DO accept a submitted Latin slug; we keep it stable as the
-        project_slug so users can deep-link by slug (e.g. /shelves/process-engine).
+        """Upsert a project shelf.
+
+        BookStack installations may ignore submitted shelf slugs and generate
+        one from the display name. In that case the stable lookup key becomes
+        the managed description marker ``project=<slug>`` plus the shelf name.
         """
         existing = self._find_by_slug("/api/shelves", slug)
+        managed = self._find_managed_shelves(name=name, project_slug=slug)
+        if not existing and managed:
+            existing = managed[0]
+        duplicate_ids = {int(existing["id"])} if existing else set()
+        duplicates = [
+            row for row in managed
+            if int(row.get("id", 0)) not in duplicate_ids
+        ]
         payload = {"name": name, "description": description, "slug": slug}
         if existing:
-            updated = self._req("PUT", f"/api/shelves/{existing['id']}", payload) or existing
+            if duplicates:
+                updated = self._merge_duplicate_shelves(existing, duplicates, payload)
+            else:
+                updated = self._req("PUT", f"/api/shelves/{existing['id']}", payload) or existing
             return updated
         return self._req("POST", "/api/shelves", payload)
 
@@ -106,14 +120,27 @@ class BookStackClient:
         across projects.
         """
         shelf = self.get_shelf(shelf_id)
-        for summary in shelf.get("books") or []:
-            if summary.get("name") == name:
-                # Reuse existing; PUT to keep description fresh.
-                return self._req(
-                    "PUT",
-                    f"/api/books/{summary['id']}",
-                    {"name": name, "description": description},
-                ) or summary
+        matches = [
+            summary for summary in shelf.get("books") or []
+            if summary.get("name") == name
+        ]
+        if matches:
+            canonical = sorted(matches, key=lambda row: int(row["id"]))[0]
+            duplicates = [
+                row for row in matches
+                if int(row["id"]) != int(canonical["id"])
+            ]
+            if duplicates:
+                self._merge_duplicate_books(
+                    shelf=shelf,
+                    canonical=canonical,
+                    duplicates=duplicates,
+                )
+            return self._req(
+                "PUT",
+                f"/api/books/{canonical['id']}",
+                {"name": name, "description": description},
+            ) or canonical
         created = self._req(
             "POST", "/api/books", {"name": name, "description": description}
         )
@@ -153,6 +180,9 @@ class BookStackClient:
     def delete_page(self, page_id: int) -> None:
         self._req("DELETE", f"/api/pages/{page_id}", ok_statuses=frozenset({204, 200}))
 
+    def delete_book(self, book_id: int) -> None:
+        self._req("DELETE", f"/api/books/{book_id}", ok_statuses=frozenset({204, 200}))
+
     # ── helpers ──────────────────────────────────────────────────────
 
     def _find_by_slug(self, path: str, slug: str) -> dict[str, Any] | None:
@@ -161,6 +191,71 @@ class BookStackClient:
             if row.get("slug") == slug:
                 return row
         return None
+
+    def _find_managed_shelves(self, *, name: str, project_slug: str) -> list[dict[str, Any]]:
+        rows = self._paginate("/api/shelves", {"query": name, "count": "100"})
+        marker = f"project={project_slug}"
+        matches = [
+            row for row in rows
+            if row.get("name") == name and marker in str(row.get("description") or "")
+        ]
+        return sorted(matches, key=lambda row: int(row.get("id", 0)))
+
+    def _merge_duplicate_shelves(
+        self,
+        canonical: dict[str, Any],
+        duplicates: list[dict[str, Any]],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        canonical_id = int(canonical["id"])
+        book_ids: list[int] = []
+        for shelf_id in [canonical_id] + [int(row["id"]) for row in duplicates]:
+            shelf = self.get_shelf(shelf_id)
+            for book in shelf.get("books") or []:
+                book_id = int(book["id"])
+                if book_id not in book_ids:
+                    book_ids.append(book_id)
+
+        update_payload = dict(payload)
+        if book_ids:
+            update_payload["books"] = book_ids
+        updated = self._req("PUT", f"/api/shelves/{canonical_id}", update_payload) or canonical
+        for row in duplicates:
+            self._req(
+                "DELETE",
+                f"/api/shelves/{int(row['id'])}",
+                ok_statuses=frozenset({200, 202, 204}),
+            )
+        return updated
+
+    def _merge_duplicate_books(
+        self,
+        *,
+        shelf: dict[str, Any],
+        canonical: dict[str, Any],
+        duplicates: list[dict[str, Any]],
+    ) -> None:
+        canonical_id = int(canonical["id"])
+        for duplicate in duplicates:
+            duplicate_id = int(duplicate["id"])
+            for page_summary in self.list_pages_in_book(duplicate_id):
+                page = self.get_page(int(page_summary["id"]))
+                moved = self.upsert_page(
+                    book_id=canonical_id,
+                    name=str(page["name"]),
+                    markdown=str(page.get("markdown") or ""),
+                )
+                if int(moved["id"]) != int(page["id"]):
+                    self.delete_page(int(page["id"]))
+
+        duplicate_ids = {int(row["id"]) for row in duplicates}
+        remaining_book_ids = [
+            int(row["id"]) for row in shelf.get("books") or []
+            if int(row["id"]) not in duplicate_ids
+        ]
+        self._req("PUT", f"/api/shelves/{int(shelf['id'])}", {"books": remaining_book_ids})
+        for duplicate in duplicates:
+            self.delete_book(int(duplicate["id"]))
 
     def _find_page_by_name(self, book_id: int, name: str) -> dict[str, Any] | None:
         for row in self.list_pages_in_book(book_id):

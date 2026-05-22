@@ -55,6 +55,7 @@ def run_ready_task(
         prompt_path=artifacts.prompt_path,
         event_path=artifacts.event_path,
         verification_level=task.verification_level,
+        extra_env=config.executor_env or {},
     )
     result = executor.run(context)
     terminal_state = "Done" if result.outcome == "agent_done" else "Partial"
@@ -298,6 +299,7 @@ def _execute_one_task(
             verification_level=list(claimed.get("verification_level") or []),
             idle_timeout_seconds=delivery.idle_timeout_seconds if delivery else 600,
             hard_timeout_seconds=delivery.hard_timeout_seconds if delivery else 3600,
+            extra_env=config.executor_env or {},
             on_line=_on_executor_line,
         )
         result = executor.run(context)
@@ -579,7 +581,7 @@ def _format_stream_line(line: str) -> str | None:
         for block in content:
             ct = block.get("type", "")
             if ct == "thinking":
-                text = str(block.get("thinking", ""))
+                text = str(block.get("thinking") or block.get("text") or "")
                 for tline in text.split("\n"):
                     stripped = tline.strip()
                     if stripped and not stripped.startswith("{"):

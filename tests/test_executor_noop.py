@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from orchestrator.executor_protocol import TaskRunContext
 from orchestrator.executors import get_executor
@@ -74,6 +75,24 @@ class ExecutorNoopTest(unittest.TestCase):
             # Prompt is fed via stdin (avoids arg-length limits).
             self.assertEqual(command[-1], "-")
             self.assertNotIn("--ask-for-approval", command)
+
+    def test_codex_executor_passes_extra_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = context(Path(tmp))
+            ctx = TaskRunContext(
+                **{**ctx.__dict__, "extra_env": {"CODEX_HOME": "/tmp/codex-home"}}
+            )
+            captured = {}
+
+            def _fake_stream(*args, **kwargs):
+                captured["env"] = kwargs["env"]
+                return 0
+
+            with patch("orchestrator.executors.codex._stream_subprocess", side_effect=_fake_stream):
+                result = CodexExecutor().run(ctx)
+
+            self.assertEqual(result.outcome, "agent_done")
+            self.assertEqual(captured["env"]["CODEX_HOME"], "/tmp/codex-home")
 
     # ── idle / hard timeout and process-group tests ──────────────
 
@@ -217,7 +236,7 @@ class ExecutorNoopTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ctx = context(Path(tmp))
             command = ClaudeExecutor().build_command(ctx)
-            self.assertEqual(command[0], "claude")
+            self.assertTrue(command[0].endswith("/claude") or command[0] == "claude")
             self.assertIn("--print", command)
             self.assertIn("--dangerously-skip-permissions", command)
             self.assertIn("--output-format", command)

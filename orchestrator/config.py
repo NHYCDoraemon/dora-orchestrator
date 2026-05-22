@@ -16,6 +16,7 @@ class OrchestratorConfig:
     batch_path: Path | None = None
     project_slug: str = ""
     project_title: str = ""
+    executor_env: dict[str, str] | None = None
 
 
 def load_config(environ: dict[str, str] | None = None) -> OrchestratorConfig:
