@@ -51,6 +51,65 @@ def _seed_batch_state(client: InMemoryPlaneClient) -> None:
     )
 
 
+def _required_read_paths_from_prompt(prompt: str) -> list[str]:
+    paths: list[str] = []
+    in_required_reads = False
+    for line in prompt.splitlines():
+        if line.strip() == "Required reads:":
+            in_required_reads = True
+            continue
+        if in_required_reads and not line.strip():
+            break
+        if in_required_reads and line.startswith("- `") and line.endswith("`"):
+            paths.append(line.removeprefix("- `").removesuffix("`"))
+    return paths
+
+
+def _write_read_events_for_prompt(context) -> None:
+    context.event_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt = context.prompt_path.read_text(encoding="utf-8")
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": path},
+                    }
+                ]
+            },
+        }
+        for path in _required_read_paths_from_prompt(prompt)
+    ]
+    with context.event_path.open("w", encoding="utf-8") as f:
+        for event in events:
+            f.write(json.dumps(event, ensure_ascii=False, sort_keys=True))
+            f.write("\n")
+
+
+class _ReadRequiredSourceExecutor:
+    def __init__(
+        self,
+        *,
+        summary: str = "Noop executor completed.",
+        outcome: str = "agent_done",
+        backend_event: str = "",
+    ):
+        self.summary = summary
+        self.outcome = outcome
+        self.backend_event = backend_event
+
+    def run(self, context):
+        _write_read_events_for_prompt(context)
+        if self.backend_event:
+            with context.event_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "executor.started", "backend": self.backend_event, "run_id": context.run_id}, sort_keys=True))
+                f.write("\n")
+        return ExecutorResult(self.outcome, self.summary, [])
+
+
 def _seed_progress_task(client: InMemoryPlaneClient, *, summary: str = "") -> None:
     client.upsert_project("process-frontend", "Process Frontend")
     client.upsert_issue(
@@ -284,7 +343,8 @@ class RunReadyBatchTaskTest(unittest.TestCase):
                 project_title="Dora",
             )
 
-            result = run_ready_batch_task(config, plane_client=client, run_id="run-1")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="run-1")
             task_result = result["runs"][0]
 
         self.assertEqual(task_result["outcome"], "agent_done")
@@ -302,6 +362,7 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         class _FakeExecutor:
             def run(self, context):
                 seen["extra_env"] = context.extra_env
+                _write_read_events_for_prompt(context)
                 return ExecutorResult("agent_done", "done", [])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,7 +396,8 @@ class RunReadyBatchTaskTest(unittest.TestCase):
                 project_title="Dora",
             )
 
-            result = run_ready_batch_task(config, plane_client=client, run_id="run-2")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="run-2")
             task_result = result["runs"][0]
 
         self.assertEqual(task_result["outcome"], "agent_unverified")
@@ -371,6 +433,7 @@ class RunReadyBatchTaskProgressControlTest(unittest.TestCase):
     def test_strict_progress_task_without_result_signature_stays_partial(self):
         class _FakeExecutor:
             def run(self, context):
+                _write_read_events_for_prompt(context)
                 return ExecutorResult("agent_done", "完成了页面开发，但没有结果签名。", [])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -399,6 +462,7 @@ class RunReadyBatchTaskProgressControlTest(unittest.TestCase):
     def test_strict_progress_task_result_partial_stays_partial(self):
         class _FakeExecutor:
             def run(self, context):
+                _write_read_events_for_prompt(context)
                 return ExecutorResult(
                     "agent_done",
                     "有进展但仍有 mock-only。\nRESULT: B06-F97-036-form-list partial — mock-only 未清理",
@@ -427,6 +491,7 @@ class RunReadyBatchTaskProgressControlTest(unittest.TestCase):
     def test_strict_progress_task_done_writes_progress_projection(self):
         class _FakeExecutor:
             def run(self, context):
+                _write_read_events_for_prompt(context)
                 return ExecutorResult(
                     "agent_done",
                     "表单模板列表已接入。\nRESULT: B06-F97-036-form-list done — L1-L5 全绿",
@@ -472,7 +537,8 @@ class RunReadyBatchTaskHonorsFrontmatterTest(unittest.TestCase):
                 project_slug="dora",
             )
 
-            result = run_ready_batch_task(config, plane_client=client, run_id="run-4")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor(backend_event="noop")):
+                result = run_ready_batch_task(config, plane_client=client, run_id="run-4")
 
             self.assertEqual(result["runs"][0]["outcome"], "agent_done")
             events = (Path(tmp) / ".dora" / "loop-runs" / "run-4" / "events.ndjson").read_text(encoding="utf-8")
@@ -492,7 +558,8 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
                 project_slug="dora",
             )
 
-            result = run_ready_batch_task(config, plane_client=client, run_id="run-emit-1")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="run-emit-1")
 
         self.assertEqual(result["runs"][0]["outcome"], "agent_done")
         markers = [c["marker"] for c in client.comments]
@@ -519,13 +586,99 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
                 project_slug="dora",
             )
 
-            run_ready_batch_task(config, plane_client=client, run_id="run-emit-2")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                run_ready_batch_task(config, plane_client=client, run_id="run-emit-2")
 
         labels = client.issues[("dora", "DORA-PLN-20260501B-T01")].get("labels") or []
         self.assertIn("needs:review", labels)
 
 
 class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
+    def test_noop_executor_without_required_reads_blocks_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            _seed_batch_state(client)
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="dora",
+            )
+            events: list[tuple[str, dict]] = []
+
+            result = run_ready_batch_task(
+                config,
+                plane_client=client,
+                run_id="source-evidence-missing",
+                on_progress=lambda event, data: events.append((event, data)),
+            )
+
+        task_result = result["runs"][0]
+        issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
+        self.assertEqual(task_result["outcome"], "source_evidence_missing")
+        self.assertEqual(task_result["state"], "Needs Input")
+        self.assertTrue(task_result["verification"]["pass"])
+        self.assertFalse(task_result["source_evidence"]["pass"])
+        self.assertTrue(task_result["source_evidence"]["missing_paths"])
+        self.assertEqual(issue["state"], "Needs Input")
+        self.assertIn("dora:source-evidence-missing", issue.get("labels") or [])
+        markers = [comment["marker"] for comment in client.comments]
+        self.assertIn("dora-loop:source-evidence", markers)
+        self.assertIn(("source_evidence", {"external_id": "DORA-PLN-20260501B-T01", "pass": False}), events)
+        report = client.reports[-1]
+        self.assertEqual(report["outcome"], "source_evidence_missing")
+        self.assertFalse(report["source_evidence"]["pass"])
+
+    def test_executor_reading_all_required_paths_allows_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            _seed_batch_state(client)
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="codex",
+                project_slug="dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="source-evidence-ok")
+
+        task_result = result["runs"][0]
+        self.assertEqual(task_result["outcome"], "agent_done")
+        self.assertEqual(task_result["state"], "Done")
+        self.assertTrue(task_result["source_evidence"]["pass"])
+        self.assertEqual(task_result["source_evidence"]["missing_paths"], [])
+
+    def test_delivery_receives_combined_verification_and_source_evidence_pass(self):
+        captured = {}
+
+        def _fake_delivery(*args, **kwargs):
+            captured["verification_pass"] = kwargs["verification_pass"]
+            return DeliveryResult()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            _seed_batch_state(client)
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="dora",
+            )
+            delivery = DeliveryConfig(repo_root=repo, project_slug="dora")
+
+            with patch("orchestrator.delivery.run_delivery", side_effect=_fake_delivery):
+                result = run_ready_batch_task(config, plane_client=client, run_id="source-evidence-delivery", delivery=delivery)
+
+        task_result = result["runs"][0]
+        self.assertEqual(task_result["outcome"], "source_evidence_missing")
+        self.assertTrue(task_result["verification"]["pass"])
+        self.assertFalse(task_result["source_evidence"]["pass"])
+        self.assertIs(captured["verification_pass"], False)
+
     def test_missing_required_source_doc_blocks_before_claim(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
@@ -640,6 +793,7 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         class _FakeExecutor:
             def run(self, context):
                 captured["prompt"] = context.prompt_path.read_text(encoding="utf-8")
+                _write_read_events_for_prompt(context)
                 return ExecutorResult("agent_done", "done", [])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -707,6 +861,7 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         class _FakeExecutor:
             def run(self, context):
                 captured["prompt"] = context.prompt_path.read_text(encoding="utf-8")
+                _write_read_events_for_prompt(context)
                 return ExecutorResult("agent_done", "done", [])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -790,12 +945,13 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
                 executor="",
                 project_slug="dora",
             )
-            result = run_ready_batch_task(
-                config,
-                plane_client=client,
-                run_id="strict-1",
-                max_loops=2,
-            )
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(
+                    config,
+                    plane_client=client,
+                    run_id="strict-1",
+                    max_loops=2,
+                )
 
             self.assertEqual(
                 [run["external_id"] for run in result["runs"]],
@@ -845,7 +1001,8 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
                 executor="",
                 project_slug="dora",
             )
-            result = run_ready_batch_task(config, plane_client=client, run_id="chain-1")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="chain-1")
 
             self.assertEqual(result["outcome"], "agent_done")
             self.assertEqual(result["loop_count"], 3)
@@ -925,10 +1082,11 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
                 project_slug="dora",
             )
             events: list[tuple[str, dict]] = []
-            result = run_ready_batch_task(
-                config, plane_client=client, run_id="cb-1",
-                on_progress=lambda e, d: events.append((e, d)),
-            )
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="cb-1",
+                    on_progress=lambda e, d: events.append((e, d)),
+                )
 
             # Without the breaker, T03 would also be picked up after the
             # two failing ones. With the breaker (default 2) the run aborts
@@ -966,7 +1124,8 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
                 executor="",
                 project_slug="dora",
             )
-            result = run_ready_batch_task(config, plane_client=client, run_id="cb-2")
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="cb-2")
 
             self.assertNotIn("circuit_breaker_open", result)
             self.assertEqual(result["loop_count"], 3)  # T01, T02, no_ready
@@ -991,10 +1150,11 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
                 executor="",
                 project_slug="dora",
             )
-            result = run_ready_batch_task(
-                config, plane_client=client, run_id="cb-3",
-                max_no_progress_streak=1,
-            )
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="cb-3",
+                    max_no_progress_streak=1,
+                )
 
             self.assertTrue(result["circuit_breaker_open"])
             self.assertEqual(result["loop_count"], 1)

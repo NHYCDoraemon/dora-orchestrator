@@ -18,6 +18,7 @@ from .plane_backends import create_plane_client
 from .plane_provisioner import provision_project
 from .spec_loader import load_project_spec
 from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
+from .source_evidence import evaluate_source_evidence_from_event_path
 from .task_graph import build_task_graph
 
 if TYPE_CHECKING:
@@ -173,6 +174,8 @@ def run_ready_batch_task(
         if outcome == "no_ready":
             break
         if outcome == "source_context_missing":
+            break
+        if outcome == "source_evidence_missing":
             break
 
         # Circuit breaker: a "zero-progress" iteration is one where the
@@ -380,7 +383,17 @@ def _execute_one_task(
             on_progress("verification", {"external_id": external_id, "pass": verification["pass"],
                          "skipped": verification.get("skipped", False)})
 
-        if strict_progress and result_signal is not None:
+        source_evidence = evaluate_source_evidence_from_event_path(
+            artifacts.event_path,
+            worktree_root=repo_root,
+            required_paths=source_bundle.required_read_paths,
+        )
+        if on_progress:
+            on_progress("source_evidence", {"external_id": external_id, "pass": source_evidence.ok})
+
+        if not source_evidence.ok:
+            outcome = "source_evidence_missing"
+        elif strict_progress and result_signal is not None:
             outcome = _progress_controlled_outcome(result.outcome, bool(verification["pass"]), result_signal)
         elif result.outcome == "agent_done" and not verification["pass"]:
             outcome = "agent_unverified"
@@ -388,7 +401,18 @@ def _execute_one_task(
             outcome = result.outcome
 
         retry_count = _read_retry_count(claimed)
-        if outcome == "agent_done":
+        if outcome == "source_evidence_missing":
+            terminal_state = "Needs Input"
+            if hasattr(plane_client, "add_label"):
+                plane_client.add_label(config.project_slug, external_id, "dora:source-evidence-missing")
+            _emit(
+                plane_client,
+                config.project_slug,
+                external_id,
+                "dora-loop:source-evidence",
+                source_evidence.message,
+            )
+        elif outcome == "agent_done":
             terminal_state = "Done"
         elif strict_progress and result_signal and result_signal.get("status") == "needs_input":
             terminal_state = "Needs Input"
@@ -415,10 +439,18 @@ def _execute_one_task(
                 "summary_path": str(artifacts.summary_path),
                 "verify_path": str(artifacts.verify_path),
                 "verification": verification,
+                "source_evidence": {
+                    "pass": source_evidence.ok,
+                    "missing_paths": [str(path) for path in source_evidence.missing_paths],
+                    "observed_paths": [str(path) for path in source_evidence.observed_paths],
+                },
                 "result_signal": result_signal,
             },
         )
         plane_client.release_issue(config.project_slug, external_id, terminal_state)
+        if outcome == "source_evidence_missing" and hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
+            plane_client.issues[(config.project_slug, external_id)]["state"] = "Needs Input"
+            plane_client.issues[(config.project_slug, external_id)]["assignee"] = None
         _released = True
         if strict_progress and result_signal is not None:
             _write_progress_projection(
@@ -464,7 +496,7 @@ def _execute_one_task(
             external_id=external_id,
             task_title=str(claimed.get("name") or external_id),
             outcome=outcome,
-            verification_pass=verification["pass"],
+            verification_pass=bool(verification["pass"]) and source_evidence.ok,
             verification_results=verification.get("results", []),
             run_id=run_id,
         )
@@ -537,6 +569,11 @@ def _execute_one_task(
         "summary_path": str(artifacts.summary_path),
         "verify_path": str(artifacts.verify_path),
         "verification": verification,
+        "source_evidence": {
+            "pass": source_evidence.ok,
+            "missing_paths": [str(path) for path in source_evidence.missing_paths],
+            "observed_paths": [str(path) for path in source_evidence.observed_paths],
+        },
         "result_signal": result_signal,
         "touched_files": [str(path) for path in result.touched_files],
     }

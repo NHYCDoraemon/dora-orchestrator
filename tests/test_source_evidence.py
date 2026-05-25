@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator.source_evidence import evaluate_source_evidence_from_event_path
+from orchestrator.source_evidence import evaluate_source_evidence, evaluate_source_evidence_from_event_path
 
 
 class SourceEvidenceTest(unittest.TestCase):
@@ -40,3 +40,64 @@ class SourceEvidenceTest(unittest.TestCase):
 
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (bundle.resolve(),))
+
+    def test_bash_and_codex_command_paths_satisfy_required_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / ".dora" / "source-bundles" / "B06" / "T01" / "source-bundle.md"
+            doc = tmp_path / "docs" / "design.md"
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": f"sed -n '1,80p' {bundle}"},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": ["cat", "docs/design.md"],
+                        },
+                    },
+                ],
+                worktree_root=tmp_path,
+                required_paths=[bundle, doc],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_event_path_ignores_malformed_json_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / ".dora" / "source-bundles" / "B06" / "T01" / "source-bundle.md"
+            event_path = tmp_path / "events.ndjson"
+            event_path.write_text(
+                "{not json}\n"
+                + json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Read",
+                                "input": {"file_path": str(bundle)},
+                            }
+                        ]
+                    },
+                })
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle])
+
+            self.assertIs(result.ok, True)
