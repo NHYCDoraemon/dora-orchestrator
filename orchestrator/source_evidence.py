@@ -365,7 +365,102 @@ def _sed_has_write_script(parts: list[str]) -> bool:
 
 
 def _sed_script_writes(script: str) -> bool:
-    return bool(re.search(r"(^|[;{}\n])[^;{}\n]*[wW]\s+\S", script))
+    return any(_sed_command_writes(part) for part in re.split(r"[;{}\n]", script))
+
+
+def _sed_command_writes(command: str) -> bool:
+    stripped = command.strip()
+    if not stripped:
+        return False
+    index = _sed_command_index(stripped)
+    if index >= len(stripped):
+        return False
+    command_char = stripped[index]
+    if command_char in {"e", "w", "W"}:
+        return True
+    if command_char == "s":
+        return _sed_substitution_writes(stripped[index:])
+    return False
+
+
+def _sed_command_index(command: str) -> int:
+    index = 0
+    for address_number in range(2):
+        index = _skip_space(command, index)
+        next_index = _skip_sed_address(command, index)
+        if next_index == index:
+            break
+        index = _skip_space(command, next_index)
+        if address_number == 0 and index < len(command) and command[index] == ",":
+            index += 1
+            continue
+        break
+    index = _skip_space(command, index)
+    if index < len(command) and command[index] == "!":
+        index = _skip_space(command, index + 1)
+    return index
+
+
+def _skip_space(value: str, index: int) -> int:
+    while index < len(value) and value[index].isspace():
+        index += 1
+    return index
+
+
+def _skip_sed_address(command: str, index: int) -> int:
+    if index >= len(command):
+        return index
+    if command[index].isdigit():
+        index += 1
+        while index < len(command) and command[index].isdigit():
+            index += 1
+        if index < len(command) and command[index] == "~":
+            index += 1
+            while index < len(command) and command[index].isdigit():
+                index += 1
+        return index
+    if command[index] == "$":
+        return index + 1
+    if command[index] in {"+", "~"} and index + 1 < len(command) and command[index + 1].isdigit():
+        index += 2
+        while index < len(command) and command[index].isdigit():
+            index += 1
+        return index
+    if command[index] == "/":
+        return _skip_sed_delimited(command, index + 1, "/")
+    if command[index] == "\\" and index + 1 < len(command):
+        return _skip_sed_delimited(command, index + 2, command[index + 1])
+    return index
+
+
+def _skip_sed_delimited(value: str, index: int, delimiter: str) -> int:
+    escaped = False
+    while index < len(value):
+        char = value[index]
+        index += 1
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == delimiter:
+            return index
+    return len(value)
+
+
+def _sed_substitution_writes(command: str) -> bool:
+    if len(command) < 2:
+        return False
+    delimiter = command[1]
+    if delimiter.isspace():
+        return False
+    index = _skip_sed_delimited(command, 2, delimiter)
+    if index >= len(command):
+        return False
+    index = _skip_sed_delimited(command, index, delimiter)
+    flags = command[index:]
+    return bool(re.search(r"[eE]|[wW]\s*\S", flags))
 
 
 def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
