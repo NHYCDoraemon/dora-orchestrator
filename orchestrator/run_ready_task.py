@@ -773,6 +773,8 @@ def _render_executor_prompt(
     wt_path = str(worktree_path)
     ext_id = str(issue.get("external_id") or "")
     issue_key = str(issue.get("key") or ext_id)
+    required_skills = _required_skills_for_issue(issue)
+    required_skills_section = _render_required_skills_section(required_skills)
     header = (
         "You are running unattended inside the dora orchestrator. There is no "
         "human in the loop on this run; act with full decision authority.\n\n"
@@ -781,6 +783,7 @@ def _render_executor_prompt(
         f"- **Batch**: `{batch_id}`\n"
         f"- **Branch / cwd**: `{branch}` (you are already inside the "
         f"worktree at `{wt_path}`)\n\n"
+        f"{required_skills_section}"
         "# Operating rules\n"
         "1. **Decide and act.** The Issue Packet below is the contract. Make "
         "the most reasonable assumption it supports and proceed; do not ask "
@@ -818,6 +821,47 @@ def _render_executor_prompt(
         "# Issue Packet\n\n"
     )
     return header + body
+
+
+def _render_required_skills_section(required_skills: list[str]) -> str:
+    if not required_skills:
+        return ""
+    lines = [
+        "# Required Skills",
+        "",
+        "Load and use these skills before starting engineering work:",
+    ]
+    lines.extend(f"- REQUIRED SKILL: {skill}" for skill in required_skills)
+    lines.extend(
+        [
+            "",
+            "If this skill is unavailable, stop and report the missing skill.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _required_skills_for_issue(issue: dict) -> list[str]:
+    skills = _list_prompt_values(issue.get("required_skills"))
+    if skills:
+        return skills
+    description = str(issue.get("description_html") or "")
+    if not description:
+        return []
+    from .plane_live import _extract_frontmatter_list
+
+    return _extract_frontmatter_list(description, "required_skills")
+
+
+def _list_prompt_values(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
 
 
 MAX_RETRIES = 3

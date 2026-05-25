@@ -100,6 +100,7 @@ def submit_task_issue_batch(
                 "acceptance": _parse_acceptance_bullets(task.sections.get("Acceptance", "")),
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
                 "verification_commands": _list_value(task.metadata.get("verification_commands")),
+                "required_skills": _list_value(task.metadata.get("required_skills")),
                 "program_page_slug": f"program-{batch.program_id}",
                 "batch_page_slug": f"batch-{batch.batch_id}",
             },

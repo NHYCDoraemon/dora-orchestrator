@@ -8,7 +8,7 @@ from orchestrator.config import OrchestratorConfig
 from orchestrator.executor_protocol import ExecutorResult
 from orchestrator.executors.claude import _resolve_claude_binary
 from orchestrator.in_memory_plane import InMemoryPlaneClient
-from orchestrator.run_ready_task import _format_stream_line, run_ready_batch_task
+from orchestrator.run_ready_task import _format_stream_line, _render_executor_prompt, run_ready_batch_task
 
 
 def _seed_batch_state(client: InMemoryPlaneClient) -> None:
@@ -41,6 +41,38 @@ def _seed_batch_state(client: InMemoryPlaneClient) -> None:
 
 
 class RunReadyBatchTaskTest(unittest.TestCase):
+    def test_executor_prompt_includes_required_skills_when_declared(self):
+        prompt = _render_executor_prompt(
+            {
+                "external_id": "DORA-BACK-20260501A-T01",
+                "key": "DOR-1",
+                "required_skills": ["maritime-java-backend-development"],
+                "body": "# 后端任务\n",
+            },
+            batch_id="20260501A",
+            branch="orchestrator/codex/DOR-1",
+            worktree_path=Path("/tmp/worktree"),
+        )
+
+        self.assertIn("# Required Skills", prompt)
+        self.assertIn("REQUIRED SKILL: maritime-java-backend-development", prompt)
+        self.assertIn("If this skill is unavailable, stop and report the missing skill.", prompt)
+
+    def test_executor_prompt_omits_required_skills_when_not_declared(self):
+        prompt = _render_executor_prompt(
+            {
+                "external_id": "DORA-FE-20260501A-T01",
+                "key": "DOR-2",
+                "body": "# 前端任务\n",
+            },
+            batch_id="20260501A",
+            branch="orchestrator/codex/DOR-2",
+            worktree_path=Path("/tmp/worktree"),
+        )
+
+        self.assertNotIn("# Required Skills", prompt)
+        self.assertNotIn("maritime-java-backend-development", prompt)
+
     def test_formats_codex_agent_messages(self):
         message = "I will inspect the repository first.\nThen edit."
         line = json.dumps({

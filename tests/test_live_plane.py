@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass, field
 
-from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings
+from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings, _adapt_issue
 
 
 class LivePlaneClientTest(unittest.TestCase):
@@ -57,6 +57,22 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertIn(("POST", "/api/v1/workspaces/doraemon/projects/project-1/issues/"), api.calls)
         self.assertIn(("POST", "/api/v1/workspaces/doraemon/projects/project-1/modules/module-implementation/module-issues/"), api.calls)
         self.assertIn(("POST", "/api/v1/workspaces/doraemon/projects/project-1/cycles/cycle-s15/cycle-issues/"), api.calls)
+
+    def test_adapt_issue_extracts_required_skills_from_frontmatter(self):
+        adapted = _adapt_issue({
+            "id": "issue-1",
+            "sequence_id": 1,
+            "external_id": "DORA-BACK-20260501A-T01",
+            "description_html": (
+                "<pre>---\n"
+                "required_skills:\n"
+                "  - maritime-java-backend-development\n"
+                "depends_on: []\n"
+                "---</pre>"
+            ),
+        })
+
+        self.assertEqual(adapted["required_skills"], ["maritime-java-backend-development"])
 
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])

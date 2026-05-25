@@ -934,6 +934,11 @@ def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
     ]
     for dep in payload.get("depends_on") or []:
         lines.append(f"  - {dep}")
+    required_skills = payload.get("required_skills") or []
+    if required_skills:
+        lines.append("required_skills:")
+        for skill in required_skills:
+            lines.append(f"  - {skill}")
     lines.append("verification_level: " + ("[]" if not payload.get("verification_level") else ""))
     for level in payload.get("verification_level") or []:
         lines.append(f"  - {level}")
@@ -1040,6 +1045,10 @@ def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
     adapted.setdefault(
         "depends_on",
         _extract_frontmatter_list(issue.get("description_html") or "", "depends_on"),
+    )
+    adapted.setdefault(
+        "required_skills",
+        _extract_frontmatter_list(issue.get("description_html") or "", "required_skills"),
     )
     return adapted
 

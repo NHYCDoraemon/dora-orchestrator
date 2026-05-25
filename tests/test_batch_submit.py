@@ -42,6 +42,33 @@ class BatchSubmitTest(unittest.TestCase):
             self.assertIn("## 任务概要", task["body"])
             self.assertNotIn("# Task Summary", task["body"])
 
+    def test_submits_required_skills_to_task_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_text = task_path.read_text(encoding="utf-8")
+            task_path.write_text(
+                task_text.replace(
+                    "priority: P1\n",
+                    "priority: P1\nrequired_skills:\n  - maritime-java-backend-development\n",
+                ),
+                encoding="utf-8",
+            )
+            batch_dir = approve_batch(repo, batch_dir)
+            client = InMemoryPlaneClient()
+
+            submit_task_issue_batch(
+                batch_dir,
+                repo_root=repo,
+                project_slug="dora",
+                project_title="Dora",
+                plane_client=client,
+            )
+
+            task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            self.assertEqual(task["required_skills"], ["maritime-java-backend-development"])
+
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -74,6 +101,10 @@ class BatchSubmitTest(unittest.TestCase):
 
 def create_approved_batch(repo: Path) -> Path:
     batch_dir = create_batch(repo)
+    return approve_batch(repo, batch_dir)
+
+
+def approve_batch(repo: Path, batch_dir: Path) -> Path:
     (repo / ".dora").mkdir()
     (repo / ".dora" / "project.json").write_text(
         json.dumps({"project_slug": "dora", "title": "Dora"}, sort_keys=True) + "\n",
