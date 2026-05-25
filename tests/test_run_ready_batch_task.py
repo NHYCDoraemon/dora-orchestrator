@@ -651,13 +651,7 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         self.assertTrue(task_result["source_evidence"]["pass"])
         self.assertEqual(task_result["source_evidence"]["missing_paths"], [])
 
-    def test_delivery_receives_combined_verification_and_source_evidence_pass(self):
-        captured = {}
-
-        def _fake_delivery(*args, **kwargs):
-            captured["verification_pass"] = kwargs["verification_pass"]
-            return DeliveryResult()
-
+    def test_delivery_is_skipped_when_source_evidence_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
             client = InMemoryPlaneClient()
@@ -670,14 +664,15 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
             )
             delivery = DeliveryConfig(repo_root=repo, project_slug="dora")
 
-            with patch("orchestrator.delivery.run_delivery", side_effect=_fake_delivery):
+            with patch("orchestrator.delivery.run_delivery") as run_delivery:
                 result = run_ready_batch_task(config, plane_client=client, run_id="source-evidence-delivery", delivery=delivery)
 
         task_result = result["runs"][0]
         self.assertEqual(task_result["outcome"], "source_evidence_missing")
         self.assertTrue(task_result["verification"]["pass"])
         self.assertFalse(task_result["source_evidence"]["pass"])
-        self.assertIs(captured["verification_pass"], False)
+        self.assertNotIn("delivery", task_result)
+        run_delivery.assert_not_called()
 
     def test_missing_required_source_doc_blocks_before_claim(self):
         with tempfile.TemporaryDirectory() as tmp:

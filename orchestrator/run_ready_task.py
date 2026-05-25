@@ -485,7 +485,7 @@ def _execute_one_task(
 
     # --- optional git delivery ----------------------------------------
     delivery_result = None
-    if delivery is not None:
+    if delivery is not None and outcome != "source_evidence_missing":
         from .delivery import run_delivery
 
         delivery_result = run_delivery(

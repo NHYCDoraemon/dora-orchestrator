@@ -91,7 +91,7 @@ def _event_paths(
                 inp = block.get("input")
                 if not isinstance(inp, Mapping):
                     continue
-                if name in {"Read", "Grep", "Glob"}:
+                if name in {"Read", "Grep"}:
                     paths.extend(_normalize_path(path, worktree_root) for path in _input_path_values(inp))
                 elif name == "Bash":
                     paths.extend(_command_paths(inp.get("command"), worktree_root, required_paths, relative_required_paths))
@@ -177,6 +177,8 @@ def _is_read_command(parts: list[str]) -> bool:
         return False
     if any(part in _REDIRECT_OPERATORS for part in parts):
         return False
+    if command == "sed" and _sed_is_in_place(parts):
+        return False
     return True
 
 
@@ -184,6 +186,10 @@ def _command_name(parts: list[str]) -> str:
     if not parts:
         return ""
     return Path(parts[0]).name
+
+
+def _sed_is_in_place(parts: list[str]) -> bool:
+    return any(part == "-i" or part.startswith("-i.") or part.startswith("--in-place") for part in parts[1:])
 
 
 def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
