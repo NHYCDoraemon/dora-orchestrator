@@ -145,6 +145,24 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("outside worktree", result.message)
             self.assertEqual(result.required_read_paths, ())
 
+    def test_missing_source_metadata_keys_returns_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertFalse(result.ok)
+            self.assertIn("missing source metadata keys", result.message)
+            self.assertIn("source_tables", result.message)
+            self.assertIn("source_queries", result.message)
+            self.assertNotIn("source_docs", result.message)
+            self.assertEqual(result.required_read_paths, ())
+
 
 if __name__ == "__main__":
     unittest.main()

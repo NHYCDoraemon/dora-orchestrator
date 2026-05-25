@@ -596,6 +596,44 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         self.assertIn("Execution Packet v1 is missing", marker_comments[0]["body"])
         get_executor.assert_not_called()
 
+    def test_packet_v1_without_source_metadata_blocks_before_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Missing source fields",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "noop",
+                "execution_packet_version": 1,
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor") as get_executor:
+                result = run_ready_batch_task(config, plane_client=client, run_id="source-fields-missing")
+
+        task_result = result["runs"][0]
+        issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
+        self.assertEqual(task_result["outcome"], "source_context_missing")
+        self.assertEqual(task_result["state"], "Needs Input")
+        self.assertEqual(issue["state"], "Needs Input")
+        self.assertIsNone(issue.get("assignee"))
+        self.assertIsNone(issue.get("dagster_run_id"))
+        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
+        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:source-context"]
+        self.assertEqual(len(marker_comments), 1)
+        self.assertIn("source_docs", marker_comments[0]["body"])
+        self.assertIn("source_tables", marker_comments[0]["body"])
+        self.assertIn("source_queries", marker_comments[0]["body"])
+        get_executor.assert_not_called()
+
     def test_prompt_includes_source_context_contract_paths_and_slice(self):
         captured = {}
 

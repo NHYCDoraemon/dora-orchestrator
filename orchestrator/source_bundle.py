@@ -19,6 +19,9 @@ from .source_context import (
 from .source_slicing import SliceResult, render_query_slice
 
 
+SOURCE_PACKET_KEYS = ("source_docs", "source_tables", "source_queries")
+
+
 @dataclass(frozen=True)
 class SourceBundleResult:
     ok: bool
@@ -37,6 +40,11 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
     bundle_root = repo_root / ".dora" / "source-bundles" / _safe_segment(batch_id) / _safe_segment(task_key)
     bundle_path = bundle_root / "source-bundle.md"
     manifest_path = bundle_root / "manifest.json"
+
+    missing_keys = [key for key in SOURCE_PACKET_KEYS if key not in issue]
+    if missing_keys:
+        message = "missing source metadata keys: " + ", ".join(missing_keys)
+        return _result(False, bundle_root, bundle_path, manifest_path, (), (), message)
 
     try:
         source_docs = _source_docs(issue, repo_root)
