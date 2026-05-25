@@ -217,9 +217,10 @@ def _command_paths(
     paths: list[Path] = []
     for inner in _shell_wrapper_inner_commands(parts):
         paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
-    for segment in _simple_command_segments(parts):
-        if not _is_read_command(segment):
-            continue
+    segments = _simple_command_segments(parts)
+    if not segments or any(not _is_read_command(segment) for segment in segments):
+        return tuple(paths)
+    for segment in segments:
         for part in _path_candidate_parts(segment):
             if _is_output_redirection_token(part):
                 break
@@ -325,9 +326,7 @@ def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
 
 
 def _clean_token(token: str) -> str:
-    cleaned = token.strip().strip("\"'`,;()[]{}<>")
-    cleaned = re.sub(r"(?<=\S):\d+(?::\d+)?$", "", cleaned)
-    return cleaned
+    return token.strip().strip("\"'`,;()[]{}<>")
 
 
 def _required_path_matches(

@@ -812,6 +812,29 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
+    def test_line_suffix_token_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/design.md:1",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
     def test_later_rm_segment_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -834,7 +857,7 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
-    def test_later_cat_segment_satisfies_required_path(self):
+    def test_later_cat_mixed_with_rm_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             doc = tmp_path / "docs" / "design.md"
@@ -854,8 +877,32 @@ class SourceEvidenceTest(unittest.TestCase):
                 required_paths=[doc],
             )
 
-            self.assertIs(result.ok, True)
-            self.assertEqual(result.missing_paths, ())
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_read_segment_mixed_with_later_rm_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+            other = tmp_path / "docs" / "other.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/design.md && rm docs/other.md",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
 
     def test_pipeline_counts_only_read_operands_in_each_segment(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -924,7 +971,7 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
-    def test_compact_and_later_cat_segment_satisfies_required_path(self):
+    def test_compact_and_later_cat_mixed_with_rm_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             doc = tmp_path / "docs" / "design.md"
@@ -944,8 +991,8 @@ class SourceEvidenceTest(unittest.TestCase):
                 required_paths=[doc],
             )
 
-            self.assertIs(result.ok, True)
-            self.assertEqual(result.missing_paths, ())
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
 
     def test_event_path_ignores_malformed_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
