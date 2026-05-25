@@ -75,6 +75,77 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_codex_command_repo_relative_src_path_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            app = tmp_path / "src" / "app.py"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat src/app.py",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[app],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_shell_wrapper_inner_command_path_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "/bin/zsh -lc 'cat docs/design.md'",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_common_filename_token_satisfies_required_readme_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            readme = tmp_path / "README.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "name": "Bash",
+                                    "input": {"command": "sed -n '1,20p' README.md"},
+                                }
+                            ]
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[readme],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
     def test_event_path_ignores_malformed_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

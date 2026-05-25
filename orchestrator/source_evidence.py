@@ -48,7 +48,7 @@ def evaluate_source_evidence(
 ) -> SourceEvidenceResult:
     root = worktree_root.resolve()
     required = tuple(_normalize_path(path, root) for path in required_paths)
-    observed = _unique_paths(_normalize_path(path, root) for event in events for path in _event_paths(event))
+    observed = _unique_paths(path for event in events for path in _event_paths(event, root, required))
     observed_set = set(observed)
     missing = tuple(path for path in required if path not in observed_set)
     ok = not missing
@@ -65,7 +65,7 @@ def evaluate_source_evidence(
     )
 
 
-def _event_paths(event: Mapping[str, Any]) -> tuple[Path, ...]:
+def _event_paths(event: Mapping[str, Any], worktree_root: Path, required_paths: tuple[Path, ...]) -> tuple[Path, ...]:
     paths: list[Path] = []
 
     message = event.get("message")
@@ -82,15 +82,15 @@ def _event_paths(event: Mapping[str, Any]) -> tuple[Path, ...]:
                 if not isinstance(inp, Mapping):
                     continue
                 if name in {"Read", "Grep", "Glob"}:
-                    paths.extend(_input_path_values(inp))
+                    paths.extend(_normalize_path(path, worktree_root) for path in _input_path_values(inp))
                 elif name == "Bash":
-                    paths.extend(_command_paths(inp.get("command")))
+                    paths.extend(_command_paths(inp.get("command"), worktree_root, required_paths))
 
     item = event.get("item")
     if isinstance(item, Mapping):
         command = item.get("command")
         if command is not None:
-            paths.extend(_command_paths(command))
+            paths.extend(_command_paths(command, worktree_root, required_paths))
 
     return tuple(paths)
 
@@ -104,29 +104,63 @@ def _input_path_values(inp: Mapping[str, Any]) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def _command_paths(command: Any) -> tuple[Path, ...]:
+def _command_paths(command: Any, worktree_root: Path, required_paths: tuple[Path, ...]) -> tuple[Path, ...]:
     if isinstance(command, list):
         parts = [str(item) for item in command]
     elif isinstance(command, str):
-        try:
-            parts = shlex.split(command)
-        except ValueError:
-            parts = command.split()
+        parts = _split_command(command)
     else:
         return ()
 
     paths: list[Path] = []
     for part in parts:
         token = _clean_token(part)
-        if _is_path_like(token):
-            paths.append(Path(token))
+        paths.extend(_required_path_matches(token, worktree_root, required_paths))
+    for inner in _shell_wrapper_inner_commands(parts):
+        paths.extend(_command_paths(inner, worktree_root, required_paths))
     return tuple(paths)
+
+
+def _split_command(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
+    commands: list[str] = []
+    for index, part in enumerate(parts[:-1]):
+        if part in {"-c", "-lc"}:
+            commands.append(parts[index + 1])
+    return tuple(commands)
 
 
 def _clean_token(token: str) -> str:
     cleaned = token.strip().strip("\"'`,;()[]{}<>")
     cleaned = re.sub(r"(?<=\S):\d+(?::\d+)?$", "", cleaned)
     return cleaned
+
+
+def _required_path_matches(token: str, worktree_root: Path, required_paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    if not _is_path_like(token):
+        return ()
+    normalized = _normalize_path(Path(token), worktree_root)
+    if normalized in required_paths:
+        return (normalized,)
+
+    relative_token = token.removeprefix("./")
+    matches = []
+    for required in required_paths:
+        try:
+            relative_required = required.relative_to(worktree_root).as_posix()
+        except ValueError:
+            relative_required = ""
+        if relative_required == relative_token:
+            matches.append(required)
+        elif "/" not in relative_token and Path(relative_required).name == relative_token:
+            matches.append(required)
+    return tuple(matches)
 
 
 def _is_path_like(token: str) -> bool:
@@ -136,8 +170,9 @@ def _is_path_like(token: str) -> bool:
         token.startswith("/")
         or token.startswith("./")
         or token.startswith("../")
-        or token.startswith("docs/")
         or ".dora/source-bundles/" in token
+        or "/" in token
+        or bool(re.search(r"\.[A-Za-z0-9]{1,12}$", token))
     )
 
 
