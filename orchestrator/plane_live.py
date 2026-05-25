@@ -939,6 +939,16 @@ def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
         lines.append("required_skills:")
         for skill in required_skills:
             lines.append(f"  - {skill}")
+    suggested_skills = payload.get("suggested_skills") or []
+    if suggested_skills:
+        lines.append("suggested_skills:")
+        for skill in suggested_skills:
+            lines.append(f"  - {skill}")
+    forbidden_skills = payload.get("forbidden_skills") or []
+    if forbidden_skills:
+        lines.append("forbidden_skills:")
+        for skill in forbidden_skills:
+            lines.append(f"  - {skill}")
     lines.append("verification_level: " + ("[]" if not payload.get("verification_level") else ""))
     for level in payload.get("verification_level") or []:
         lines.append(f"  - {level}")
@@ -1049,6 +1059,14 @@ def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
     adapted.setdefault(
         "required_skills",
         _extract_frontmatter_list(issue.get("description_html") or "", "required_skills"),
+    )
+    adapted.setdefault(
+        "suggested_skills",
+        _extract_frontmatter_list(issue.get("description_html") or "", "suggested_skills"),
+    )
+    adapted.setdefault(
+        "forbidden_skills",
+        _extract_frontmatter_list(issue.get("description_html") or "", "forbidden_skills"),
     )
     return adapted
 

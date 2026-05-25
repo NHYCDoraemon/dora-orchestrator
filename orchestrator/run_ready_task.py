@@ -775,6 +775,10 @@ def _render_executor_prompt(
     issue_key = str(issue.get("key") or ext_id)
     required_skills = _required_skills_for_issue(issue)
     required_skills_section = _render_required_skills_section(required_skills)
+    suggested_skills = _skills_for_issue(issue, "suggested_skills")
+    suggested_skills_section = _render_suggested_skills_section(suggested_skills)
+    forbidden_skills = _skills_for_issue(issue, "forbidden_skills")
+    forbidden_skills_section = _render_forbidden_skills_section(forbidden_skills)
     header = (
         "You are running unattended inside the dora orchestrator. There is no "
         "human in the loop on this run; act with full decision authority.\n\n"
@@ -784,6 +788,8 @@ def _render_executor_prompt(
         f"- **Branch / cwd**: `{branch}` (you are already inside the "
         f"worktree at `{wt_path}`)\n\n"
         f"{required_skills_section}"
+        f"{suggested_skills_section}"
+        f"{forbidden_skills_section}"
         "# Operating rules\n"
         "1. **Decide and act.** The Issue Packet below is the contract. Make "
         "the most reasonable assumption it supports and proceed; do not ask "
@@ -842,8 +848,38 @@ def _render_required_skills_section(required_skills: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _render_suggested_skills_section(suggested_skills: list[str]) -> str:
+    if not suggested_skills:
+        return ""
+    lines = [
+        "# Suggested Skills",
+        "",
+        "Consider using these skills when they fit the concrete work:",
+    ]
+    lines.extend(f"- SUGGESTED SKILL: {skill}" for skill in suggested_skills)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_forbidden_skills_section(forbidden_skills: list[str]) -> str:
+    if not forbidden_skills:
+        return ""
+    lines = [
+        "# Forbidden Skills",
+        "",
+        "Do not invoke these skills in this run:",
+    ]
+    lines.extend(f"- FORBIDDEN SKILL: {skill}" for skill in forbidden_skills)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _required_skills_for_issue(issue: dict) -> list[str]:
-    skills = _list_prompt_values(issue.get("required_skills"))
+    return _skills_for_issue(issue, "required_skills")
+
+
+def _skills_for_issue(issue: dict, key: str) -> list[str]:
+    skills = _list_prompt_values(issue.get(key))
     if skills:
         return skills
     description = str(issue.get("description_html") or "")
@@ -851,7 +887,7 @@ def _required_skills_for_issue(issue: dict) -> list[str]:
         return []
     from .plane_live import _extract_frontmatter_list
 
-    return _extract_frontmatter_list(description, "required_skills")
+    return _extract_frontmatter_list(description, key)
 
 
 def _list_prompt_values(value: object) -> list[str]:

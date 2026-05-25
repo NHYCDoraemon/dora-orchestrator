@@ -74,6 +74,25 @@ class LivePlaneClientTest(unittest.TestCase):
 
         self.assertEqual(adapted["required_skills"], ["maritime-java-backend-development"])
 
+    def test_adapt_issue_extracts_suggested_and_forbidden_skills_from_frontmatter(self):
+        adapted = _adapt_issue({
+            "id": "issue-1",
+            "sequence_id": 1,
+            "external_id": "DORA-FE-20260501A-T01",
+            "description_html": (
+                "<pre>---\n"
+                "suggested_skills:\n"
+                "  - browser:browser\n"
+                "forbidden_skills:\n"
+                "  - dora-plane\n"
+                "depends_on: []\n"
+                "---</pre>"
+            ),
+        })
+
+        self.assertEqual(adapted["suggested_skills"], ["browser:browser"])
+        self.assertEqual(adapted["forbidden_skills"], ["dora-plane"])
+
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])
         client = LivePlaneClient(

@@ -69,6 +69,40 @@ class BatchSubmitTest(unittest.TestCase):
             task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
             self.assertEqual(task["required_skills"], ["maritime-java-backend-development"])
 
+    def test_submits_suggested_and_forbidden_skills_to_task_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_text = task_path.read_text(encoding="utf-8")
+            task_path.write_text(
+                task_text.replace(
+                    "priority: P1\n",
+                    (
+                        "priority: P1\n"
+                        "suggested_skills:\n"
+                        "  - browser:browser\n"
+                        "forbidden_skills:\n"
+                        "  - dora-plane\n"
+                    ),
+                ),
+                encoding="utf-8",
+            )
+            batch_dir = approve_batch(repo, batch_dir)
+            client = InMemoryPlaneClient()
+
+            submit_task_issue_batch(
+                batch_dir,
+                repo_root=repo,
+                project_slug="dora",
+                project_title="Dora",
+                plane_client=client,
+            )
+
+            task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            self.assertEqual(task["suggested_skills"], ["browser:browser"])
+            self.assertEqual(task["forbidden_skills"], ["dora-plane"])
+
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

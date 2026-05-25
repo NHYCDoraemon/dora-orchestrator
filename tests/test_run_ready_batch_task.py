@@ -73,6 +73,41 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertNotIn("# Required Skills", prompt)
         self.assertNotIn("maritime-java-backend-development", prompt)
 
+    def test_executor_prompt_includes_suggested_and_forbidden_skills_when_declared(self):
+        prompt = _render_executor_prompt(
+            {
+                "external_id": "DORA-FE-20260501A-T01",
+                "key": "DOR-3",
+                "suggested_skills": ["browser:browser"],
+                "forbidden_skills": ["dora-plane"],
+                "body": "# 前端任务\n",
+            },
+            batch_id="20260501A",
+            branch="orchestrator/codex/DOR-3",
+            worktree_path=Path("/tmp/worktree"),
+        )
+
+        self.assertIn("# Suggested Skills", prompt)
+        self.assertIn("SUGGESTED SKILL: browser:browser", prompt)
+        self.assertIn("# Forbidden Skills", prompt)
+        self.assertIn("FORBIDDEN SKILL: dora-plane", prompt)
+        self.assertNotIn("REQUIRED SKILL: browser:browser", prompt)
+
+    def test_executor_prompt_omits_suggested_and_forbidden_sections_when_not_declared(self):
+        prompt = _render_executor_prompt(
+            {
+                "external_id": "DORA-DOC-20260501A-T01",
+                "key": "DOR-4",
+                "body": "# 文档任务\n",
+            },
+            batch_id="20260501A",
+            branch="orchestrator/codex/DOR-4",
+            worktree_path=Path("/tmp/worktree"),
+        )
+
+        self.assertNotIn("# Suggested Skills", prompt)
+        self.assertNotIn("# Forbidden Skills", prompt)
+
     def test_formats_codex_agent_messages(self):
         message = "I will inspect the repository first.\nThen edit."
         line = json.dumps({
