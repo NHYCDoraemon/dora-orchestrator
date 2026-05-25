@@ -50,6 +50,10 @@ def render_query_slice(
         if missing_columns:
             return _fail(query, "source_query_column", f"query selects missing columns: {', '.join(missing_columns)}")
 
+        filter_message = _validate_filters(fieldnames, query, context)
+        if filter_message:
+            return _fail(query, "source_query_filter", filter_message, columns=selected_columns)
+
         rows: list[dict[str, str]] = []
         for row in reader:
             match, message = _row_matches(row, fieldnames, query, context)
@@ -130,6 +134,32 @@ def _row_matches(
         except re.error as exc:
             return False, f"invalid regex filter: {exc}"
     return True, ""
+
+
+def _validate_filters(
+    fieldnames: tuple[str, ...],
+    query: SourceQuery,
+    context: dict[str, Any],
+) -> str:
+    for source_filter in query.filters:
+        column = str(source_filter.get("column") or "")
+        if column not in fieldnames:
+            return f"filter references missing column: {column}"
+
+        op = str(source_filter.get("op") or "")
+        if op not in {"equals", "contains", "regex", "in"}:
+            return f"unsupported filter op: {op}"
+
+        value, ok = _filter_value(source_filter, context)
+        if not ok:
+            return f"filter value_from path is missing: {source_filter.get('value_from')}"
+
+        if op == "regex":
+            try:
+                re.compile(str(value))
+            except re.error as exc:
+                return f"invalid regex filter: {exc}"
+    return ""
 
 
 def _filter_value(source_filter: dict[str, object], context: dict[str, Any]) -> tuple[Any, bool]:

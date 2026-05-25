@@ -276,6 +276,8 @@ def _audit_source_tables_and_queries(
                 )
             )
             continue
+        if not query.required:
+            continue
         result = render_query_slice(
             table=replace(table, path=str(resolve_repo_path(batch.repo_root, table.path))),
             query=query,

@@ -107,3 +107,20 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "FAIL")
             self.assertTrue(any(finding.code == "source_query_empty" for finding in result.findings))
+
+    def test_skips_rendering_optional_source_query_during_audit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8")
+                .replace("    required: true\n    filters:", "    required: false\n    filters:")
+                .replace("      - acceptance_signal\n", "      - acceptance_signal\n      - missing_column\n"),
+                encoding="utf-8",
+            )
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
+            self.assertFalse(any(finding.code == "source_query_column" for finding in result.findings))

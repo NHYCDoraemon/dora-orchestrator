@@ -72,3 +72,53 @@ class SourceSlicingTest(unittest.TestCase):
 
             self.assertIs(result.ok, False)
             self.assertEqual(result.code, "source_query_empty")
+
+    def test_header_only_optional_query_rejects_missing_filter_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            table_path = tmp_path / "ledger.tsv"
+            table_path.write_text("row_id\tfrontend_surface\n", encoding="utf-8")
+            table = SourceTable("progress_ledger", str(table_path), "tsv", ("row_id",), True)
+            query = SourceQuery(
+                id="optional_task_row",
+                table="progress_ledger",
+                required=False,
+                filters=({"column": "missing", "op": "equals", "value": "F97-036"},),
+                columns=("row_id",),
+                max_rows=10,
+            )
+
+            result = render_query_slice(
+                table=table,
+                query=query,
+                context={"task": {"row_id": "F97-036"}},
+                output_path=tmp_path / "slice.tsv",
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.code, "source_query_filter")
+
+    def test_header_only_optional_query_rejects_unsupported_filter_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            table_path = tmp_path / "ledger.tsv"
+            table_path.write_text("row_id\tfrontend_surface\n", encoding="utf-8")
+            table = SourceTable("progress_ledger", str(table_path), "tsv", ("row_id",), True)
+            query = SourceQuery(
+                id="optional_task_row",
+                table="progress_ledger",
+                required=False,
+                filters=({"column": "row_id", "op": "starts_with", "value": "F97"},),
+                columns=("row_id",),
+                max_rows=10,
+            )
+
+            result = render_query_slice(
+                table=table,
+                query=query,
+                context={"task": {"row_id": "F97-036"}},
+                output_path=tmp_path / "slice.tsv",
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.code, "source_query_filter")
