@@ -68,6 +68,7 @@ class SourceBundleTest(unittest.TestCase):
             )
             self.assertEqual(result.required_read_paths[0], result.bundle_path)
             self.assertIn(doc_path, result.required_read_paths)
+            self.assertIn(table_path, result.required_read_paths)
             self.assertIn(slice_path, result.required_read_paths)
             manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["execution_packet_version"], 1)
@@ -79,6 +80,58 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("docs/design.md", bundle_text)
             self.assertIn("current_task_row.tsv", bundle_text)
             self.assertNotIn("Use the real forms API.", bundle_text)
+
+    def test_required_source_table_without_query_is_required_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text("row_id\tvalue\nF97-036\tready\n", encoding="utf-8")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": True,
+                    }
+                ],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            self.assertIn(table_path, result.required_read_paths)
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertIn(str(table_path), manifest["required_read_paths"])
+
+    def test_optional_source_table_is_not_required_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text("row_id\tvalue\nF97-036\tready\n", encoding="utf-8")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": False,
+                    }
+                ],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            self.assertNotIn(table_path, result.required_read_paths)
 
     def test_malicious_batch_and_task_segments_stay_under_source_bundles(self):
         with tempfile.TemporaryDirectory() as tmp:

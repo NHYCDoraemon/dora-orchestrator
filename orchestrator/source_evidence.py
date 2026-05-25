@@ -299,7 +299,7 @@ def _is_read_command(parts: list[str]) -> bool:
         return False
     if any(part in _REDIRECT_OPERATORS for part in parts):
         return False
-    if command == "sed" and _sed_is_in_place(parts):
+    if command == "sed" and not _sed_is_read_only(parts):
         return False
     return True
 
@@ -319,11 +319,62 @@ def _sed_is_in_place(parts: list[str]) -> bool:
     return False
 
 
+def _sed_is_read_only(parts: list[str]) -> bool:
+    if _sed_is_in_place(parts):
+        return False
+    return not _sed_has_write_script(parts[1:])
+
+
+def _sed_has_write_script(parts: list[str]) -> bool:
+    script_seen = False
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        index += 1
+        if part == "--":
+            return False
+        if part == "-e" or part == "--expression":
+            if index >= len(parts):
+                return False
+            script_seen = True
+            if _sed_script_writes(parts[index]):
+                return True
+            index += 1
+            continue
+        if part.startswith("--expression="):
+            script_seen = True
+            if _sed_script_writes(part.split("=", 1)[1]):
+                return True
+            continue
+        if part == "-f" or part == "--file" or part.startswith("--file="):
+            return True
+        if part.startswith("-f") and len(part) > 2:
+            return True
+        if part.startswith("-e") and len(part) > 2:
+            script_seen = True
+            if _sed_script_writes(part[2:]):
+                return True
+            continue
+        if part.startswith("-") and part != "-":
+            continue
+        if not script_seen:
+            script_seen = True
+            if _sed_script_writes(part):
+                return True
+    return False
+
+
+def _sed_script_writes(script: str) -> bool:
+    return bool(re.search(r"(^|[;{}\n])[^;{}\n]*[wW]\s+\S", script))
+
+
 def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
     command = _command_name(parts)
     candidates = parts[1:]
     if command in {"grep", "rg"}:
         return _grep_file_operands(candidates)
+    if command == "sed":
+        return _sed_file_operands(candidates)
     if command == "awk":
         for index, part in enumerate(candidates):
             if part == "--":
@@ -336,6 +387,40 @@ def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
 
 def _looks_like_awk_program(part: str) -> bool:
     return "{" in part or "}" in part
+
+
+def _sed_file_operands(parts: list[str]) -> tuple[str, ...]:
+    operands: list[str] = []
+    script_seen = False
+    index = 0
+    options_done = False
+    while index < len(parts):
+        part = parts[index]
+        index += 1
+        if part == "--":
+            options_done = True
+            continue
+        if not options_done and (part == "-e" or part == "--expression"):
+            script_seen = True
+            index += 1
+            continue
+        if not options_done and (part == "-f" or part == "--file"):
+            script_seen = True
+            index += 1
+            continue
+        if not options_done and (part.startswith("--expression=") or part.startswith("--file=")):
+            script_seen = True
+            continue
+        if not options_done and (part.startswith("-e") or part.startswith("-f")) and len(part) > 2:
+            script_seen = True
+            continue
+        if not options_done and part.startswith("-") and part != "-":
+            continue
+        if not script_seen:
+            script_seen = True
+            continue
+        operands.append(part)
+    return tuple(operands)
 
 
 def _is_output_redirection_token(part: str) -> bool:

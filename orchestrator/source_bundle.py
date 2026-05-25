@@ -125,7 +125,8 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
                 required_slice_paths.append(result.output_path)
 
     required_doc_paths = [Path(str(doc["absolute_path"])) for doc in source_docs if doc["required"]]
-    required_read_paths = tuple([bundle_path, *required_doc_paths, *required_slice_paths])
+    required_table_paths = [Path(str(table["absolute_path"])) for table in table_manifest if table["required"]]
+    required_read_paths = _unique_paths([bundle_path, *required_doc_paths, *required_table_paths, *required_slice_paths])
     manifest = {
         "execution_packet_version": EXECUTION_PACKET_VERSION,
         "batch_id": batch_id,
@@ -280,6 +281,18 @@ def _repo_or_abs(path: Path, repo_root: Path) -> str:
         return path.resolve().relative_to(repo_root).as_posix()
     except ValueError:
         return str(path)
+
+
+def _unique_paths(paths: list[Path]) -> tuple[Path, ...]:
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(resolved)
+    return tuple(out)
 
 
 def _list_value(value: object) -> list[object]:
