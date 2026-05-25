@@ -20,6 +20,18 @@ from .batch_models import PROGRESS_METADATA_FIELDS
 from .issue_order import batch_sort_key, batch_task_order_key
 
 
+_DORA_METADATA_START = "<!-- dora:metadata"
+_DORA_METADATA_END = "dora:metadata -->"
+_DORA_METADATA_KEYS = [
+    "execution_packet_version",
+    "execution_packet_hash",
+    "source_docs",
+    "source_tables",
+    "source_queries",
+    "verification_commands",
+]
+
+
 @dataclass(frozen=True)
 class LivePlaneSettings:
     base_url: str
@@ -902,6 +914,38 @@ def _markdown_to_html(markdown: str) -> str:
     return "<pre>" + html.escape(markdown) + "</pre>"
 
 
+def _metadata_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: payload[key] for key in _DORA_METADATA_KEYS if key in payload}
+
+
+def _append_metadata_block(markdown: str, metadata: dict[str, Any]) -> str:
+    if not metadata:
+        return markdown
+    encoded = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+    return f"{markdown.rstrip()}\n\n{_DORA_METADATA_START}\n{encoded}\n{_DORA_METADATA_END}\n"
+
+
+def _extract_metadata_block(description_html: str) -> dict[str, Any]:
+    text = html.unescape(description_html)
+    if "<pre>" in text and "</pre>" in text:
+        text = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
+    start = text.find(_DORA_METADATA_START)
+    if start == -1:
+        return {}
+    json_start = start + len(_DORA_METADATA_START)
+    end = text.find(_DORA_METADATA_END, json_start)
+    if end == -1:
+        return {}
+    raw = text[json_start:end].strip()
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return parsed
+
+
 def _comment_html(body: str, *, marker: str | None = None, raw_html: bool = False) -> str:
     """Format a Plane comment matching dora_plane.py's marker convention.
 
@@ -958,7 +1002,8 @@ def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
     for level in payload.get("verification_level") or []:
         lines.append(f"  - {level}")
     lines.append("---")
-    return "\n".join(lines).strip() + "\n"
+    markdown = "\n".join(lines).strip() + "\n"
+    return _append_metadata_block(markdown, _metadata_payload(payload))
 
 
 def _extract_frontmatter_list(description_html: str, key: str) -> list[str]:
@@ -1079,6 +1124,7 @@ def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
             value = _extract_frontmatter_value(description_html, key)
             if value is not None:
                 adapted[key] = value
+    adapted.update(_extract_metadata_block(description_html))
     return adapted
 
 

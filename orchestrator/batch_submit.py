@@ -15,6 +15,12 @@ from .batch_models import (
     TaskIssueBatch,
     TaskIssueDraft,
 )
+from .source_context import (
+    EXECUTION_PACKET_VERSION,
+    source_docs_for_task,
+    source_queries_from_batch,
+    source_tables_from_batch,
+)
 
 
 def submit_task_issue_batch(
@@ -79,6 +85,10 @@ def submit_task_issue_batch(
         },
     )
     for task in batch.tasks:
+        source_docs = [doc.to_issue_dict(batch.repo_root) for doc in source_docs_for_task(batch, task)]
+        source_tables = [table.to_issue_dict() for table in source_tables_from_batch(batch)]
+        source_queries = [query.to_issue_dict() for query in source_queries_from_batch(batch)]
+        execution_packet_hash = compute_batch_hash(batch.path, repo_root=repo_root)
         risk = str(task.metadata.get("risk") or "medium")
         priority = task.priority or "P3"
         progress_metadata = {
@@ -106,6 +116,11 @@ def submit_task_issue_batch(
                 "acceptance": _parse_acceptance_bullets(task.sections.get("Acceptance", "")),
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
                 "verification_commands": _list_value(task.metadata.get("verification_commands")),
+                "execution_packet_version": EXECUTION_PACKET_VERSION,
+                "execution_packet_hash": execution_packet_hash,
+                "source_docs": source_docs,
+                "source_tables": source_tables,
+                "source_queries": source_queries,
                 "required_skills": _list_value(task.metadata.get("required_skills")),
                 "suggested_skills": _list_value(task.metadata.get("suggested_skills")),
                 "forbidden_skills": _list_value(task.metadata.get("forbidden_skills")),
