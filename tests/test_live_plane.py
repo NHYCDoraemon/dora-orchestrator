@@ -3,6 +3,7 @@ import unittest
 from dataclasses import dataclass, field
 
 from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings, _adapt_issue, _issue_markdown, _markdown_to_html
+from orchestrator.source_visibility import classify_source_context
 
 
 class LivePlaneClientTest(unittest.TestCase):
@@ -223,6 +224,57 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(adapted["execution_packet_version"], 1)
         self.assertEqual(adapted["execution_packet_hash"], "sha256:valid")
         self.assertEqual(adapted["verification_commands"], payload["verification_commands"])
+
+    def test_query_issues_resolves_label_ids_for_source_context_visibility(self):
+        packet_payload = {
+            "name": "Source context blocked",
+            "body": "# Source context blocked\n",
+            "depends_on": [],
+            "execution_packet_version": 1,
+            "source_docs": [],
+            "source_tables": [],
+            "source_queries": [],
+        }
+        api = FakePlaneApi(
+            states=[{"id": "s-needs-input", "name": "Needs Input"}],
+            labels=[
+                {"id": "lbl-source-context-missing", "name": "dora:source-context-missing"},
+                {"id": "lbl-source-evidence-missing", "name": "dora:source-evidence-missing"},
+            ],
+            issues=[
+                {
+                    "id": "issue-1",
+                    "external_id": "DORA-CTX-20260501A-T01",
+                    "state": "s-needs-input",
+                    "labels": ["lbl-source-context-missing"],
+                    "description_html": _markdown_to_html(_issue_markdown("DORA-CTX-20260501A-T01", packet_payload)),
+                },
+                {
+                    "id": "issue-2",
+                    "external_id": "DORA-CTX-20260501A-T02",
+                    "state": "s-needs-input",
+                    "labels": ["lbl-source-evidence-missing"],
+                    "description_html": _markdown_to_html(_issue_markdown("DORA-CTX-20260501A-T02", packet_payload)),
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        issues = client.query_issues("dora")
+
+        visibility = {issue["external_id"]: classify_source_context(issue) for issue in issues}
+        self.assertEqual(visibility["DORA-CTX-20260501A-T01"], "source_context_missing")
+        self.assertEqual(visibility["DORA-CTX-20260501A-T02"], "source_evidence_missing")
+        self.assertEqual(issues[0]["labels"], ["lbl-source-context-missing"])
+        self.assertEqual(issues[0]["label_names"], ["dora:source-context-missing"])
 
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])
@@ -672,6 +724,7 @@ class FakePlaneApi:
     cycles: list[dict] = field(default_factory=list)
     issues: list[dict] = field(default_factory=list)
     pages: list[dict] = field(default_factory=list)
+    labels: list[dict] = field(default_factory=list)
 
     def login(self) -> None:
         self.logged_in = True
@@ -685,6 +738,8 @@ class FakePlaneApi:
             return self.modules
         if path.endswith("/cycles/"):
             return self.cycles
+        if path.endswith("/labels/"):
+            return self.labels
         if path.endswith("/issues/"):
             return self.issues
         return []
@@ -709,6 +764,10 @@ class FakePlaneApi:
         if method == "POST" and path.endswith("/cycles/"):
             item = {"id": "cycle-s15", **payload}
             self.cycles.append(item)
+            return item
+        if method == "POST" and path.endswith("/labels/"):
+            item = {"id": f"label-{payload['name']}", **payload}
+            self.labels.append(item)
             return item
         if method == "POST" and path.endswith("/issues/"):
             item = {"id": "issue-1", "sequence_id": 1, **payload}

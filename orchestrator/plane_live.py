@@ -397,9 +397,10 @@ class LivePlaneClient:
         """Return all issues currently in the Blocked state."""
         self._refresh_blocked(project_slug)
         result = []
+        label_names_by_id = self._label_names_by_id()
         for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
             if self._state_name(issue.get("state")) == "Blocked":
-                result.append(_adapt_issue(issue))
+                result.append(_adapt_issue(issue, label_names_by_id=label_names_by_id))
         return sorted(result, key=lambda i: i.get("external_id", ""))
 
     def state_counts(self, project_slug: str) -> dict[str, int]:
@@ -442,6 +443,7 @@ class LivePlaneClient:
                         module_member_ids.add(str(issue_id))
 
         results: list[dict[str, Any]] = []
+        label_names_by_id = self._label_names_by_id()
         for issue in self.api.paginate_v1(f"{self.proj_v1}/issues/"):
             external_id = issue.get("external_id") or ""
             if not external_id:
@@ -455,7 +457,7 @@ class LivePlaneClient:
                 continue
             if module_member_ids is not None and str(issue.get("id") or "") not in module_member_ids:
                 continue
-            adapted = _adapt_issue(issue)
+            adapted = _adapt_issue(issue, label_names_by_id=label_names_by_id)
             adapted["state"] = state_name or adapted.get("state")
             results.append(adapted)
         results.sort(key=lambda i: i.get("external_id", ""))
@@ -641,6 +643,13 @@ class LivePlaneClient:
                 if item.get("name")
             }
         return self._label_by_name
+
+    def _label_names_by_id(self) -> dict[str, str]:
+        return {
+            str(label["id"]): name
+            for name, label in self._labels().items()
+            if label.get("id")
+        }
 
     def _issue_payload(self, external_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         body = _issue_markdown(external_id, payload)
@@ -1099,7 +1108,7 @@ def _strip_json_control_chars(text: str) -> str:
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
 
 
-def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
+def _adapt_issue(issue: dict[str, Any], *, label_names_by_id: dict[str, str] | None = None) -> dict[str, Any]:
     adapted = dict(issue)
     description_html = issue.get("description_html") or ""
     sequence_id = adapted.get("sequence_id")
@@ -1125,8 +1134,33 @@ def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
             value = _extract_frontmatter_value(description_html, key)
             if value is not None:
                 adapted[key] = value
+    if label_names_by_id:
+        label_names = _issue_label_names(adapted.get("labels"), label_names_by_id)
+        if label_names:
+            adapted["label_names"] = label_names
     adapted.update(_extract_metadata_block(description_html))
     return adapted
+
+
+def _issue_label_names(labels: object, label_names_by_id: dict[str, str]) -> list[str]:
+    if not isinstance(labels, list):
+        return []
+    names: list[str] = []
+    for item in labels:
+        if isinstance(item, str):
+            name = label_names_by_id.get(item)
+            if name and name not in names:
+                names.append(name)
+        elif isinstance(item, dict):
+            name_value = item.get("name")
+            if isinstance(name_value, str) and name_value not in names:
+                names.append(name_value)
+            id_value = item.get("id")
+            if id_value is not None:
+                mapped = label_names_by_id.get(str(id_value))
+                if mapped and mapped not in names:
+                    names.append(mapped)
+    return names
 
 
 def _render_run_report(report: dict[str, Any]) -> str:

@@ -12,6 +12,7 @@ SOURCE_PACKET_KEYS = ("source_docs", "source_tables", "source_queries")
 
 def classify_source_context(issue: Mapping[str, object]) -> str:
     labels = set(_label_names(issue.get("labels")))
+    labels.update(_label_names(issue.get("label_names")))
     if SOURCE_EVIDENCE_MISSING_LABEL in labels:
         return "source_evidence_missing"
     if SOURCE_CONTEXT_MISSING_LABEL in labels:
