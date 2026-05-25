@@ -146,6 +146,50 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_basename_token_does_not_satisfy_nested_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            readme = tmp_path / "docs" / "README.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat README.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[readme],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (readme.resolve(),))
+
+    def test_extensionless_repo_relative_token_satisfies_required_makefile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            makefile = tmp_path / "Makefile"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat Makefile",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[makefile],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
     def test_event_path_ignores_malformed_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
