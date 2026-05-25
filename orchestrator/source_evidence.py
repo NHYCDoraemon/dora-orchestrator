@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-_READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "rg", "awk"}
+_READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "rg"}
 _REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
 _OUTPUT_REDIRECT_RE = re.compile(r"^(?:\d*)>>?|&>>?|>\|")
 _SHELL_SEGMENT_SEPARATORS = {"&&", "||", ";", "|"}

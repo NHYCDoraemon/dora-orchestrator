@@ -363,7 +363,7 @@ class LivePlaneClient:
             if not external_id or external_id.endswith("-ROOT"):
                 continue
             current = self._state_name(issue.get("state"))
-            if current in {"In Progress", "Done", "Cancelled", "Partial"}:
+            if current in {"In Progress", "Done", "Cancelled", "Partial", "Needs Input"}:
                 continue
             deps = _extract_frontmatter_list(issue.get("description_html") or "", "depends_on")
             if all(dep in done for dep in deps):

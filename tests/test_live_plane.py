@@ -414,6 +414,39 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertIsNotNone(ready)
         self.assertEqual(ready["external_id"], "PFE-P1FE-20260522D-T11")
 
+    def test_refresh_blocked_preserves_needs_input_state(self):
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-todo", "name": "Todo"},
+                {"id": "state-needs-input", "name": "Needs Input"},
+            ],
+            issues=[
+                {
+                    "id": "issue-needs-input",
+                    "external_id": "DORA-PLN-20260501B-T01",
+                    "state": "state-needs-input",
+                    "priority": "high",
+                    "description_html": "<pre>depends_on: []</pre>",
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        client._refresh_blocked("dora")
+
+        self.assertNotIn(
+            ("PATCH", "/api/v1/workspaces/doraemon/projects/project-1/issues/issue-needs-input/"),
+            api.calls,
+        )
+
     def test_in_progress_held_by_other_agent_is_not_reclaimed(self):
         """Defensive stale-lock policy: an issue assigned to a different
         agent_uuid (or unassigned) is NEVER reclaimed, no matter the
