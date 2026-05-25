@@ -380,6 +380,29 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
+    def test_shell_script_argument_dash_c_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "bash ./script.sh -c 'cat docs/design.md'",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
     def test_common_filename_token_satisfies_required_readme_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -775,6 +798,52 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_rg_glob_option_value_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "rg --glob docs/design.md TODO src/other.txt",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_rg_glob_option_with_file_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            app = tmp_path / "src" / "app.ts"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "rg --glob '*.ts' TODO src/app.ts",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[app],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
     def test_grep_pattern_only_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -815,6 +884,52 @@ class SourceEvidenceTest(unittest.TestCase):
                 ],
                 worktree_root=tmp_path,
                 required_paths=[api],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_grep_option_value_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "grep -m 1 docs/design.md src/other.txt",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_grep_option_value_with_file_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "grep -m 1 TODO docs/design.md",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
             )
 
             self.assertIs(result.ok, True)

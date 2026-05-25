@@ -14,6 +14,21 @@ _REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
 _OUTPUT_REDIRECT_RE = re.compile(r"^(?:\d*)>>?|&>>?|>\|")
 _SHELL_SEGMENT_SEPARATORS = {"&&", "||", ";", "|"}
 _SHELL_COMMANDS = {"sh", "bash", "zsh", "dash", "ksh"}
+_GREP_VALUE_OPTIONS = {
+    "--after-context",
+    "--before-context",
+    "--context",
+    "--glob",
+    "--max-count",
+    "--type",
+    "-A",
+    "-B",
+    "-C",
+    "-g",
+    "-m",
+    "-t",
+}
+_GREP_PATTERN_OPTIONS = {"--file", "--regexp", "-e", "-f"}
 
 
 @dataclass(frozen=True)
@@ -242,11 +257,12 @@ def _split_command(command: str) -> list[str]:
 def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
     if _command_name(parts) not in _SHELL_COMMANDS:
         return ()
-    commands: list[str] = []
-    for index, part in enumerate(parts[:-1]):
+    for index, part in enumerate(parts[1:-1], start=1):
         if part in {"-c", "-lc"}:
-            commands.append(parts[index + 1])
-    return tuple(commands)
+            return (parts[index + 1],)
+        if not part.startswith("-"):
+            return ()
+    return ()
 
 
 def _simple_command_segments(parts: list[str]) -> tuple[tuple[str, ...], ...]:
@@ -320,16 +336,58 @@ def _has_output_redirection(parts: tuple[str, ...]) -> bool:
 def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
     operands: list[str] = []
     pattern_seen = False
-    for part in parts:
+    index = 0
+    options_done = False
+    while index < len(parts):
+        part = parts[index]
+        index += 1
         if part == "--":
+            options_done = True
             continue
-        if part.startswith("-"):
+        if not options_done and _grep_option_consumes_value(part):
+            index += 1
+            continue
+        if not options_done and _grep_option_embeds_value(part):
+            continue
+        if not options_done and _grep_option_supplies_pattern(part):
+            pattern_seen = True
+            index += 1
+            continue
+        if not options_done and _grep_pattern_option_embeds_value(part):
+            pattern_seen = True
+            continue
+        if not options_done and part.startswith("-"):
             continue
         if not pattern_seen:
             pattern_seen = True
             continue
         operands.append(part)
     return tuple(operands)
+
+
+def _grep_option_consumes_value(part: str) -> bool:
+    return part in _GREP_VALUE_OPTIONS or part in {"--glob", "--type"}
+
+
+def _grep_option_embeds_value(part: str) -> bool:
+    if part.startswith("--"):
+        name, sep, _value = part.partition("=")
+        return bool(sep and name in _GREP_VALUE_OPTIONS)
+    return (
+        len(part) > 2
+        and part[:2] in {"-A", "-B", "-C", "-g", "-m", "-t"}
+    )
+
+
+def _grep_option_supplies_pattern(part: str) -> bool:
+    return part in _GREP_PATTERN_OPTIONS
+
+
+def _grep_pattern_option_embeds_value(part: str) -> bool:
+    if part.startswith("--"):
+        name, sep, _value = part.partition("=")
+        return bool(sep and name in _GREP_PATTERN_OPTIONS)
+    return len(part) > 2 and part[:2] in {"-e", "-f"}
 
 
 def _clean_token(token: str) -> str:
