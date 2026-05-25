@@ -169,6 +169,8 @@ def _command_name(parts: list[str]) -> str:
 def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
     command = _command_name(parts)
     candidates = parts[1:]
+    if command in {"grep", "rg"}:
+        return _grep_file_operands(candidates)
     if command == "awk":
         for index, part in enumerate(candidates):
             if part == "--":
@@ -181,6 +183,21 @@ def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
 
 def _looks_like_awk_program(part: str) -> bool:
     return "{" in part or "}" in part
+
+
+def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
+    operands: list[str] = []
+    pattern_seen = False
+    for part in parts:
+        if part == "--":
+            continue
+        if part.startswith("-"):
+            continue
+        if not pattern_seen:
+            pattern_seen = True
+            continue
+        operands.append(part)
+    return tuple(operands)
 
 
 def _clean_token(token: str) -> str:
