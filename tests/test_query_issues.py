@@ -12,6 +12,15 @@ from orchestrator import query_issues
 from orchestrator.in_memory_plane import InMemoryPlaneClient
 
 
+def _packet_metadata() -> dict[str, object]:
+    return {
+        "execution_packet_version": 1,
+        "source_docs": [],
+        "source_tables": [],
+        "source_queries": [],
+    }
+
+
 def _seed(client: InMemoryPlaneClient) -> None:
     client.upsert_project("demo", "Demo")
     # Two batches of issues, each with multiple modules.
@@ -184,6 +193,61 @@ class QueryIssuesCliTest(unittest.TestCase):
         self.assertEqual(result["match_count"], 3)
         ids = {i["external_id"] for i in result["issues"]}
         self.assertNotIn("DEMO-PROG-ROOT", ids)
+
+    def test_cli_emits_source_context_in_json_and_stderr_rows(self):
+        client = InMemoryPlaneClient()
+        client.upsert_project("demo", "Demo")
+        client.upsert_issue(
+            "demo",
+            "DEMO-SRC-T01",
+            {"name": "legacy issue", "depends_on": []},
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-SRC-T02",
+            {"name": "packet issue", "depends_on": [], **_packet_metadata()},
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-SRC-T03",
+            {
+                "name": "source evidence issue",
+                "depends_on": [],
+                "labels": ["dora:source-evidence-missing"],
+                **_packet_metadata(),
+            },
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-SRC-T04",
+            {
+                "name": "source context issue",
+                "depends_on": [],
+                "labels": [{"name": "dora:source-context-missing"}],
+                **_packet_metadata(),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp)
+            with patch("orchestrator.query_issues.create_plane_client", return_value=client):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = query_issues.main(["--repo", str(repo)])
+
+        self.assertEqual(rc, 0)
+        result = json.loads(stdout.getvalue())
+        source_context = {i["external_id"]: i["source_context"] for i in result["issues"]}
+        self.assertEqual(source_context["DEMO-SRC-T01"], "legacy_or_missing_packet")
+        self.assertEqual(source_context["DEMO-SRC-T02"], "packet_v1")
+        self.assertEqual(source_context["DEMO-SRC-T03"], "source_evidence_missing")
+        self.assertEqual(source_context["DEMO-SRC-T04"], "source_context_missing")
+        stderr_text = stderr.getvalue()
+        self.assertIn("legacy_or_missing_packet", stderr_text)
+        self.assertIn("packet_v1", stderr_text)
+        self.assertIn("source_evidence_missing", stderr_text)
+        self.assertIn("source_context_missing", stderr_text)
 
 
 class QueryIssuesCliSubcommandTest(unittest.TestCase):

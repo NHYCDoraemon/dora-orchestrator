@@ -12,6 +12,15 @@ from unittest.mock import patch
 from orchestrator import status
 
 
+def _packet_metadata() -> dict[str, object]:
+    return {
+        "execution_packet_version": 1,
+        "source_docs": [],
+        "source_tables": [],
+        "source_queries": [],
+    }
+
+
 class StatusCliTest(unittest.TestCase):
     def _make_repo(self, tmp: str, *, slug: str = "demo", title: str = "Demo") -> Path:
         repo = Path(tmp)
@@ -104,6 +113,87 @@ class StatusCliTest(unittest.TestCase):
         blocked = {i["external_id"]: i for i in result["blocked_issues"]}
         self.assertIn("DEMO-T02", blocked)
         self.assertEqual(blocked["DEMO-T02"]["depends_on"], ["DEMO-T03"])
+
+    def test_show_blocked_emits_source_context_in_json_and_stderr(self):
+        from orchestrator.in_memory_plane import InMemoryPlaneClient
+
+        client = InMemoryPlaneClient()
+        client.upsert_project("demo", "Demo")
+        client.upsert_issue(
+            "demo",
+            "DEMO-T01",
+            {"name": "legacy blocked", "depends_on": ["DEMO-MISSING"]},
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-T02",
+            {"name": "packet blocked", "depends_on": ["DEMO-MISSING"], **_packet_metadata()},
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-T03",
+            {
+                "name": "evidence blocked",
+                "depends_on": ["DEMO-MISSING"],
+                "labels": ["dora:source-evidence-missing"],
+                **_packet_metadata(),
+            },
+        )
+        client.upsert_issue(
+            "demo",
+            "DEMO-T04",
+            {
+                "name": "context blocked",
+                "depends_on": ["DEMO-MISSING"],
+                "labels": [{"name": "dora:source-context-missing"}],
+                **_packet_metadata(),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, slug="demo", title="Demo")
+            with patch("orchestrator.status.create_plane_client", return_value=client):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = status.main(["--repo", str(repo), "--show-blocked"])
+
+        self.assertEqual(rc, 0)
+        result = json.loads(stdout.getvalue())
+        blocked = {i["external_id"]: i["source_context"] for i in result["blocked_issues"]}
+        self.assertEqual(blocked["DEMO-T01"], "legacy_or_missing_packet")
+        self.assertEqual(blocked["DEMO-T02"], "packet_v1")
+        self.assertEqual(blocked["DEMO-T03"], "source_evidence_missing")
+        self.assertEqual(blocked["DEMO-T04"], "source_context_missing")
+        stderr_text = stderr.getvalue()
+        self.assertIn("source_context: legacy_or_missing_packet", stderr_text)
+        self.assertIn("source_context: packet_v1", stderr_text)
+        self.assertIn("source_context: source_evidence_missing", stderr_text)
+        self.assertIn("source_context: source_context_missing", stderr_text)
+
+    def test_blocked_stderr_includes_source_context_without_show_blocked(self):
+        from orchestrator.in_memory_plane import InMemoryPlaneClient
+
+        client = InMemoryPlaneClient()
+        client.upsert_project("demo", "Demo")
+        client.upsert_issue(
+            "demo",
+            "DEMO-T01",
+            {"name": "packet blocked", "depends_on": ["DEMO-MISSING"], **_packet_metadata()},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, slug="demo", title="Demo")
+            with patch("orchestrator.status.create_plane_client", return_value=client):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = status.main(["--repo", str(repo)])
+
+        self.assertEqual(rc, 0)
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result["blocked_issues"], [])
+        self.assertIn("source_context: packet_v1", stderr.getvalue())
 
 
 if __name__ == "__main__":

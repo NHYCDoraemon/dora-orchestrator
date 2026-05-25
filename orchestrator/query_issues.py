@@ -7,6 +7,7 @@ import sys
 from .config import load_config
 from .plane_backends import create_plane_client
 from .project_resolver import resolve_project_config
+from .source_visibility import classify_source_context
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             "priority": i.get("priority", ""),
             "depends_on": list(i.get("depends_on") or []),
             "assignee": i.get("assignee"),
+            "source_context": classify_source_context(i),
         }
         for i in issues
     ]
@@ -96,10 +98,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if output_issues:
         print(f"  Matches: {len(output_issues)}", file=sys.stderr)
+        print(
+            f"    {'External ID':32s}  {'State':12s}  {'Module':14s}  {'Source Context':24s}  Name",
+            file=sys.stderr,
+        )
         for i in output_issues:
             name = (i["name"] or "")[:60]
             print(
-                f"    {i['external_id']:32s}  {i['state']:12s}  {i['module']:14s}  {name}",
+                f"    {i['external_id']:32s}  {i['state']:12s}  {i['module']:14s}  {i['source_context']:24s}  {name}",
                 file=sys.stderr,
             )
     else:

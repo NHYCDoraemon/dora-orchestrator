@@ -7,6 +7,7 @@ import sys
 from .config import load_config
 from .plane_backends import create_plane_client
 from .project_resolver import resolve_project_config
+from .source_visibility import classify_source_context
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
             "depends_on": list(i.get("depends_on") or []),
             "priority": i.get("priority", ""),
             "module": i.get("module", ""),
+            "source_context": classify_source_context(i),
         }
         for i in blocked
     ]
@@ -65,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {bi['external_id']}", file=sys.stderr)
             print(f"      name: {bi['name'][:80]}", file=sys.stderr)
             print(f"      depends_on: [{deps}]", file=sys.stderr)
+            print(f"      source_context: {bi['source_context']}", file=sys.stderr)
 
         if not args.show_blocked:
             print("\n  Use --show-blocked for full JSON details.", file=sys.stderr)
