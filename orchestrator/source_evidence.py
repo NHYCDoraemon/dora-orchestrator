@@ -19,6 +19,7 @@ _GREP_VALUE_OPTIONS = {
     "--before-context",
     "--context",
     "--glob",
+    "--label",
     "--max-count",
     "--type",
     "-A",
@@ -226,16 +227,24 @@ def _command_paths(
     if isinstance(command, list):
         parts = [str(item) for item in command]
     elif isinstance(command, str):
+        if _contains_command_substitution(command):
+            return ()
         parts = _split_command(command)
     else:
         return ()
 
-    paths: list[Path] = []
-    for inner in _shell_wrapper_inner_commands(parts):
-        paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
     segments = _simple_command_segments(parts)
-    if not segments or any(not _is_read_command(segment) or _has_output_redirection(segment) for segment in segments):
+    if not segments or any(_has_output_redirection(segment) for segment in segments):
+        return ()
+    inner_commands = _shell_wrapper_inner_commands(parts)
+    if inner_commands:
+        paths: list[Path] = []
+        for inner in inner_commands:
+            paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
         return tuple(paths)
+    if any(not _is_read_command(segment) for segment in segments):
+        return ()
+    paths: list[Path] = []
     for segment in segments:
         for part in _path_candidate_parts(segment):
             if _is_output_redirection_token(part):
@@ -258,6 +267,8 @@ def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
     if _command_name(parts) not in _SHELL_COMMANDS:
         return ()
     for index, part in enumerate(parts[1:-1], start=1):
+        if part == "--":
+            return ()
         if part in {"-c", "-lc"}:
             return (parts[index + 1],)
         if not part.startswith("-"):
@@ -327,6 +338,10 @@ def _looks_like_awk_program(part: str) -> bool:
 
 def _is_output_redirection_token(part: str) -> bool:
     return bool(_OUTPUT_REDIRECT_RE.match(part))
+
+
+def _contains_command_substitution(command: str) -> bool:
+    return "$(" in command or "`" in command
 
 
 def _has_output_redirection(parts: tuple[str, ...]) -> bool:

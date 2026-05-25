@@ -403,6 +403,98 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
+    def test_shell_wrapper_with_output_redirect_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "bash -c 'cat docs/design.md' > out.txt",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_shell_wrapper_after_double_dash_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "bash -- -c 'cat docs/design.md'",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_command_substitution_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat $(touch /tmp/dora-evidence-write) docs/design.md",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_backtick_command_substitution_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat `touch /tmp/dora-evidence-write` docs/design.md",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
     def test_common_filename_token_satisfies_required_readme_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -934,6 +1026,29 @@ class SourceEvidenceTest(unittest.TestCase):
 
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
+
+    def test_grep_label_option_value_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "grep TODO --label docs/design.md src/other.txt",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
 
     def test_awk_write_program_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
