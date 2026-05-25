@@ -238,6 +238,54 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_codex_failed_command_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/design.md",
+                            "status": "completed",
+                            "exit_code": 1,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_codex_successful_command_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/design.md",
+                            "status": "completed",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
     def test_codex_started_command_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

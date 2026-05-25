@@ -184,6 +184,8 @@ def _codex_completed_command_paths(
         status = str(item.get("status") or "completed")
         if status != "completed":
             return ()
+        if "exit_code" in item and item.get("exit_code") != 0:
+            return ()
         command = item.get("command")
         if command is not None:
             return _command_paths(command, worktree_root, required_paths, relative_required_paths)
