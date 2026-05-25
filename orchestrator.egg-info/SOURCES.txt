@@ -31,6 +31,11 @@ orchestrator/query_issues.py
 orchestrator/refresh_roots.py
 orchestrator/run_ready_task.py
 orchestrator/scaffold.py
+orchestrator/source_bundle.py
+orchestrator/source_context.py
+orchestrator/source_evidence.py
+orchestrator/source_slicing.py
+orchestrator/source_visibility.py
 orchestrator/spec_loader.py
 orchestrator/status.py
 orchestrator/submit_batch.py
@@ -80,6 +85,9 @@ tests/test_query_issues.py
 tests/test_run_ready_batch_task.py
 tests/test_run_ready_task.py
 tests/test_scaffold.py
+tests/test_source_bundle.py
+tests/test_source_evidence.py
+tests/test_source_slicing.py
 tests/test_spec_loader.py
 tests/test_status.py
 tests/test_task_graph.py
