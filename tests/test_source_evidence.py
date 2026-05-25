@@ -344,6 +344,72 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_later_rm_segment_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat README.md && rm docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_later_cat_segment_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "rm README.md && cat docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_pipeline_counts_only_read_operands_in_each_segment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat README.md | grep TODO docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
     def test_event_path_ignores_malformed_json_lines(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

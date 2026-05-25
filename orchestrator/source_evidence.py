@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 _READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "rg", "awk"}
 _REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
+_SHELL_SEGMENT_SEPARATORS = {"&&", "||", ";", "|"}
 
 
 @dataclass(frozen=True)
@@ -129,8 +130,10 @@ def _command_paths(
     paths: list[Path] = []
     for inner in _shell_wrapper_inner_commands(parts):
         paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
-    if _is_read_command(parts):
-        for part in _path_candidate_parts(parts):
+    for segment in _simple_command_segments(parts):
+        if not _is_read_command(segment):
+            continue
+        for part in _path_candidate_parts(segment):
             token = _clean_token(part)
             paths.extend(_required_path_matches(token, worktree_root, required_paths, relative_required_paths))
     return tuple(paths)
@@ -149,6 +152,21 @@ def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
         if part in {"-c", "-lc"}:
             commands.append(parts[index + 1])
     return tuple(commands)
+
+
+def _simple_command_segments(parts: list[str]) -> tuple[tuple[str, ...], ...]:
+    segments: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for part in parts:
+        if part in _SHELL_SEGMENT_SEPARATORS:
+            if current:
+                segments.append(tuple(current))
+                current = []
+            continue
+        current.append(part)
+    if current:
+        segments.append(tuple(current))
+    return tuple(segments)
 
 
 def _is_read_command(parts: list[str]) -> bool:
