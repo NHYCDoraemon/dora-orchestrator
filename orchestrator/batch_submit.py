@@ -37,6 +37,9 @@ def submit_task_issue_batch(
         raise ValueError("cannot submit batch with failing audit")
     approval = _load_approval(batch)
     _validate_approval(batch, approval, repo_root)
+    batch_hash = compute_batch_hash(batch.path, repo_root=repo_root)
+    source_tables = [table.to_issue_dict() for table in source_tables_from_batch(batch)]
+    source_queries = [query.to_issue_dict() for query in source_queries_from_batch(batch)]
 
     plane_client.upsert_project(project_slug, project_title)
     for module in sorted(FIXED_MODULE_TAXONOMY):
@@ -77,7 +80,7 @@ def submit_task_issue_batch(
             "module": "planning",
             "priority": "P1",
             "depends_on": [],
-            "source_hash": compute_batch_hash(batch.path, repo_root=repo_root),
+            "source_hash": batch_hash,
             "agent_hint": "noop",
             "risk": "medium",
             "acceptance": [],
@@ -86,9 +89,6 @@ def submit_task_issue_batch(
     )
     for task in batch.tasks:
         source_docs = [doc.to_issue_dict(batch.repo_root) for doc in source_docs_for_task(batch, task)]
-        source_tables = [table.to_issue_dict() for table in source_tables_from_batch(batch)]
-        source_queries = [query.to_issue_dict() for query in source_queries_from_batch(batch)]
-        execution_packet_hash = compute_batch_hash(batch.path, repo_root=repo_root)
         risk = str(task.metadata.get("risk") or "medium")
         priority = task.priority or "P3"
         progress_metadata = {
@@ -117,7 +117,7 @@ def submit_task_issue_batch(
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
                 "verification_commands": _list_value(task.metadata.get("verification_commands")),
                 "execution_packet_version": EXECUTION_PACKET_VERSION,
-                "execution_packet_hash": execution_packet_hash,
+                "execution_packet_hash": batch_hash,
                 "source_docs": source_docs,
                 "source_tables": source_tables,
                 "source_queries": source_queries,

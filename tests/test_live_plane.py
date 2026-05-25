@@ -1,3 +1,4 @@
+import json
 import unittest
 from dataclasses import dataclass, field
 
@@ -168,6 +169,58 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(adapted["source_docs"], payload["source_docs"])
         self.assertEqual(adapted["source_tables"], payload["source_tables"])
         self.assertEqual(adapted["source_queries"], payload["source_queries"])
+        self.assertEqual(adapted["verification_commands"], payload["verification_commands"])
+
+    def test_issue_metadata_block_ignores_unknown_keys(self):
+        metadata = {
+            "name": "Injected name",
+            "external_id": "DORA-BAD-20260501A-T99",
+            "execution_packet_hash": "sha256:packet",
+        }
+        markdown = (
+            "# Gateway source\n\n"
+            "<!-- dora:metadata\n"
+            f"{json.dumps(metadata)}\n"
+            "dora:metadata -->\n"
+        )
+
+        adapted = _adapt_issue(
+            {
+                "id": "plane-1",
+                "name": "Original name",
+                "external_id": "DORA-CTX-20260501A-T01",
+                "description_html": _markdown_to_html(markdown),
+            }
+        )
+
+        self.assertEqual(adapted["name"], "Original name")
+        self.assertEqual(adapted["external_id"], "DORA-CTX-20260501A-T01")
+        self.assertEqual(adapted["execution_packet_hash"], "sha256:packet")
+
+    def test_issue_metadata_block_uses_valid_appended_block_after_malformed_marker(self):
+        payload = {
+            "name": "Gateway source",
+            "body": (
+                "# Gateway source\n\n"
+                "<!-- dora:metadata\n"
+                "{\"execution_packet_hash\": \n"
+                "dora:metadata -->\n"
+            ),
+            "verification_level": ["L1"],
+            "execution_packet_hash": "sha256:valid",
+            "verification_commands": ["pytest tests/test_gateway.py -q"],
+        }
+
+        markdown = _issue_markdown("DORA-CTX-20260501A-T01", payload)
+        adapted = _adapt_issue(
+            {
+                "id": "plane-1",
+                "external_id": "DORA-CTX-20260501A-T01",
+                "description_html": _markdown_to_html(markdown),
+            }
+        )
+
+        self.assertEqual(adapted["execution_packet_hash"], "sha256:valid")
         self.assertEqual(adapted["verification_commands"], payload["verification_commands"])
 
     def test_live_backend_creates_project_when_project_id_is_missing(self):

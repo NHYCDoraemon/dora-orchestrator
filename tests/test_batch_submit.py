@@ -177,8 +177,11 @@ class BatchSubmitTest(unittest.TestCase):
             )
 
             task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            root = client.issues[("dora", "DORA-CTX-20260501A-ROOT")]
+            expected_hash = compute_batch_hash(batch_dir, repo_root=repo)
             self.assertEqual(task["execution_packet_version"], 1)
-            self.assertTrue(task["execution_packet_hash"].startswith("sha256:"))
+            self.assertEqual(task["execution_packet_hash"], expected_hash)
+            self.assertEqual(root["source_hash"], expected_hash)
             source_table = task["source_tables"][0]
             self.assertEqual(source_table["id"], "progress_ledger")
             self.assertEqual(source_table["path"], "docs/progress/ledger.tsv")
