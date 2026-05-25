@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from .source_context import EXECUTION_PACKET_VERSION, SOURCE_DOC_KEYS, SourceQuery, SourceTable, hash_file, resolve_repo_path
+from .source_context import (
+    EXECUTION_PACKET_VERSION,
+    SOURCE_DOC_KEYS,
+    SourceQuery,
+    SourceTable,
+    hash_file,
+    resolve_repo_path,
+)
 from .source_slicing import SliceResult, render_query_slice
 
 
@@ -31,7 +38,10 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
     bundle_path = bundle_root / "source-bundle.md"
     manifest_path = bundle_root / "manifest.json"
 
-    source_docs = _source_docs(issue, repo_root)
+    try:
+        source_docs = _source_docs(issue, repo_root)
+    except ValueError as exc:
+        return _result(False, bundle_root, bundle_path, manifest_path, (), (), str(exc))
     for doc in source_docs:
         if doc["required"] and not Path(str(doc["absolute_path"])).is_file():
             return _result(
@@ -146,7 +156,7 @@ def _source_docs(issue: Mapping[str, object], repo_root: Path) -> list[dict[str,
                 required = True
                 sha256 = ""
                 kind = key
-            absolute = resolve_repo_path(repo_root, path)
+            absolute = _resolve_inside_worktree(repo_root, path)
             docs.append({"kind": kind, "path": path, "absolute_path": absolute, "required": required, "sha256": sha256})
     return docs
 
@@ -155,7 +165,7 @@ def _source_tables(issue: Mapping[str, object], repo_root: Path) -> tuple[Source
     tables: list[SourceTable] = []
     for item in _mapping_items(issue.get("source_tables"), "source_tables"):
         table_path = str(item.get("path") or "")
-        resolved = resolve_repo_path(repo_root, table_path)
+        resolved = _resolve_inside_worktree(repo_root, table_path)
         tables.append(
             SourceTable(
                 id=str(item.get("id") or ""),
@@ -241,8 +251,20 @@ def _task_key(issue: Mapping[str, object]) -> str:
 
 
 def _safe_segment(value: str) -> str:
-    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
-    return clean or "unknown"
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip()).strip("-_")
+    if clean in {"", ".", ".."}:
+        return "unknown"
+    return clean
+
+
+def _resolve_inside_worktree(worktree_root: Path, declared_path: str) -> Path:
+    resolved_root = worktree_root.resolve()
+    resolved = resolve_repo_path(resolved_root, declared_path)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"source path outside worktree: {declared_path}") from exc
+    return resolved
 
 
 def _repo_or_abs(path: Path, repo_root: Path) -> str:

@@ -80,6 +80,71 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("current_task_row.tsv", bundle_text)
             self.assertNotIn("Use the real forms API.", bundle_text)
 
+    def test_malicious_batch_and_task_segments_stay_under_source_bundles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            issue = {
+                "external_id": "../..",
+                "key": "../..",
+                "execution_packet_version": 1,
+                "batch_id": "..",
+                "source_docs": [],
+                "source_tables": [],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            source_bundles_root = repo / ".dora" / "source-bundles"
+            self.assertEqual(result.bundle_root.relative_to(source_bundles_root), Path("unknown") / "unknown")
+
+    def test_source_doc_outside_worktree_returns_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            secret = repo.parent / "secret.md"
+            secret.write_text("do not read\n", encoding="utf-8")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [{"kind": "source_docs", "path": "../secret.md", "required": True}],
+                "source_tables": [],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertFalse(result.ok)
+            self.assertIn("outside worktree", result.message)
+            self.assertEqual(result.required_read_paths, ())
+
+    def test_source_table_outside_worktree_returns_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table = repo.parent / "ledger.tsv"
+            table.write_text("row_id\nF97-036\n", encoding="utf-8")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "progress_ledger",
+                        "path": str(table),
+                        "format": "tsv",
+                        "key_columns": ["row_id"],
+                        "required": True,
+                    }
+                ],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertFalse(result.ok)
+            self.assertIn("outside worktree", result.message)
+            self.assertEqual(result.required_read_paths, ())
+
 
 if __name__ == "__main__":
     unittest.main()
