@@ -163,10 +163,12 @@ class LivePlaneClientTest(unittest.TestCase):
             }
         )
 
-        assert adapted["execution_packet_version"] == 1
-        assert adapted["source_tables"] == payload["source_tables"]
-        assert adapted["source_queries"] == payload["source_queries"]
-        assert adapted["verification_commands"] == payload["verification_commands"]
+        self.assertEqual(adapted["execution_packet_version"], 1)
+        self.assertEqual(adapted["execution_packet_hash"], payload["execution_packet_hash"])
+        self.assertEqual(adapted["source_docs"], payload["source_docs"])
+        self.assertEqual(adapted["source_tables"], payload["source_tables"])
+        self.assertEqual(adapted["source_queries"], payload["source_queries"])
+        self.assertEqual(adapted["verification_commands"], payload["verification_commands"])
 
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])

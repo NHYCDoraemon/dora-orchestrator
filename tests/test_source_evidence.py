@@ -26,8 +26,8 @@ class SourceEvidenceTest(unittest.TestCase):
 
             result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle, doc, slice_file])
 
-            assert result.ok is True
-            assert result.missing_paths == ()
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
 
     def test_missing_required_read_evidence_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -38,5 +38,5 @@ class SourceEvidenceTest(unittest.TestCase):
 
             result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle])
 
-            assert result.ok is False
-            assert result.missing_paths == (bundle.resolve(),)
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (bundle.resolve(),))

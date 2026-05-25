@@ -178,10 +178,23 @@ class BatchSubmitTest(unittest.TestCase):
 
             task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
             self.assertEqual(task["execution_packet_version"], 1)
-            self.assertEqual(task["source_tables"][0]["id"], "progress_ledger")
-            self.assertEqual(task["source_queries"][0]["id"], "current_task_row")
+            self.assertTrue(task["execution_packet_hash"].startswith("sha256:"))
+            source_table = task["source_tables"][0]
+            self.assertEqual(source_table["id"], "progress_ledger")
+            self.assertEqual(source_table["path"], "docs/progress/ledger.tsv")
+            self.assertEqual(source_table["format"], "tsv")
+            self.assertIs(source_table["required"], True)
+            self.assertEqual(source_table["key_columns"], ["row_id"])
+            source_query = task["source_queries"][0]
+            self.assertEqual(source_query["id"], "current_task_row")
+            self.assertEqual(source_query["table"], "progress_ledger")
+            self.assertIs(source_query["required"], True)
+            self.assertEqual(source_query["filters"][0]["value_from"], "task.row_id")
+            self.assertEqual(source_query["columns"], ["row_id", "frontend_surface", "backend_contract", "acceptance_signal"])
+            self.assertEqual(source_query["max_rows"], 10)
             self.assertEqual(task["verification_commands"], ["pytest tests/test_gateway.py -q"])
-            self.assertTrue(any(item["path"] == "docs/design.md" for item in task["source_docs"]))
+            source_doc = next(item for item in task["source_docs"] if item["path"] == "docs/design.md")
+            self.assertTrue(source_doc["sha256"].startswith("sha256:"))
 
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:

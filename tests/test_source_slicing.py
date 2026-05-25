@@ -40,11 +40,12 @@ class SourceSlicingTest(unittest.TestCase):
                 output_path=tmp_path / "slice.tsv",
             )
 
-            assert result.ok is True
-            assert result.row_count == 1
-            assert (tmp_path / "slice.tsv").read_text(encoding="utf-8") == (
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.row_count, 1)
+            self.assertEqual(
+                (tmp_path / "slice.tsv").read_text(encoding="utf-8"),
                 "row_id\tfrontend_surface\n"
-                "F97-036\tsrc/pages/forms/list/FormListPage.tsx\n"
+                "F97-036\tsrc/pages/forms/list/FormListPage.tsx\n",
             )
 
     def test_required_query_with_no_rows_fails(self):
@@ -69,5 +70,5 @@ class SourceSlicingTest(unittest.TestCase):
                 output_path=tmp_path / "slice.tsv",
             )
 
-            assert result.ok is False
-            assert result.code == "source_query_empty"
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.code, "source_query_empty")
