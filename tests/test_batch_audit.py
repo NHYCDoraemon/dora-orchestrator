@@ -81,3 +81,29 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "FAIL")
             self.assertTrue(any(finding.code == "progress_metadata" for finding in result.findings))
+
+    def test_rejects_missing_required_source_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            (repo / "docs" / "progress" / "ledger.tsv").unlink()
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "source_table_not_found" for finding in result.findings))
+
+    def test_rejects_empty_required_source_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            (repo / "docs" / "progress" / "ledger.tsv").write_text(
+                "row_id\tfrontend_surface\tbackend_contract\tacceptance_signal\n"
+                "OTHER\tsrc/Other.tsx\tGET /other\t其他信号。\n",
+                encoding="utf-8",
+            )
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "source_query_empty" for finding in result.findings))

@@ -152,6 +152,37 @@ class BatchSubmitTest(unittest.TestCase):
             self.assertEqual(task["task_kind"], "connect_or_contract")
             self.assertIn("GET /api/v1/forms", task["data_lineage"])
 
+    def test_submits_execution_packet_source_context_to_task_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_text = task_path.read_text(encoding="utf-8")
+            task_path.write_text(
+                task_text.replace(
+                    "source_commits: []\n",
+                    "source_commits: []\nverification_commands:\n  - pytest tests/test_gateway.py -q\n",
+                ),
+                encoding="utf-8",
+            )
+            batch_dir = approve_batch(repo, batch_dir)
+            client = InMemoryPlaneClient()
+
+            submit_task_issue_batch(
+                batch_dir,
+                repo_root=repo,
+                project_slug="dora",
+                project_title="Dora",
+                plane_client=client,
+            )
+
+            task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            self.assertEqual(task["execution_packet_version"], 1)
+            self.assertEqual(task["source_tables"][0]["id"], "progress_ledger")
+            self.assertEqual(task["source_queries"][0]["id"], "current_task_row")
+            self.assertEqual(task["verification_commands"], ["pytest tests/test_gateway.py -q"])
+            self.assertTrue(any(item["path"] == "docs/design.md" for item in task["source_docs"]))
+
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

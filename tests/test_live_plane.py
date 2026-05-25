@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import dataclass, field
 
-from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings, _adapt_issue
+from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings, _adapt_issue, _issue_markdown, _markdown_to_html
 
 
 class LivePlaneClientTest(unittest.TestCase):
@@ -136,6 +136,37 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(issue["progress_task_id"], "B06-F97-036-form-list")
         self.assertEqual(issue["row_id"], "F97-036")
         self.assertIn("progress_task_id: B06-F97-036-form-list", api.issues[-1]["description_html"])
+
+    def test_issue_markdown_round_trips_execution_packet_metadata(self):
+        payload = {
+            "name": "Gateway source",
+            "body": "# Gateway source\n",
+            "source_hash": "sha256:task",
+            "agent_hint": "claude",
+            "risk": "medium",
+            "depends_on": [],
+            "verification_level": ["L1"],
+            "verification_commands": ["pytest tests/test_gateway.py -q"],
+            "execution_packet_version": 1,
+            "execution_packet_hash": "sha256:packet",
+            "source_docs": [{"kind": "source_docs", "path": "docs/design.md", "sha256": "sha256:doc", "required": True}],
+            "source_tables": [{"id": "progress_ledger", "path": "docs/progress/ledger.tsv", "format": "tsv", "required": True}],
+            "source_queries": [{"id": "current_task_row", "table": "progress_ledger", "required": True, "filters": []}],
+        }
+
+        markdown = _issue_markdown("DORA-CTX-20260501A-T01", payload)
+        adapted = _adapt_issue(
+            {
+                "id": "plane-1",
+                "external_id": "DORA-CTX-20260501A-T01",
+                "description_html": _markdown_to_html(markdown),
+            }
+        )
+
+        assert adapted["execution_packet_version"] == 1
+        assert adapted["source_tables"] == payload["source_tables"]
+        assert adapted["source_queries"] == payload["source_queries"]
+        assert adapted["verification_commands"] == payload["verification_commands"]
 
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])

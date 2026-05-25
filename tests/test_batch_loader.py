@@ -20,16 +20,64 @@ class BatchLoaderTest(unittest.TestCase):
             self.assertEqual(batch.tasks[0].task_id, "DORA-CTX-20260501A-T01")
             self.assertEqual(batch.tasks[0].sections["Scope"], "允许修改：`internal/cognition/context/*`。")
 
+    def test_loads_batch_source_tables_and_queries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
 
-def create_batch(repo: Path) -> Path:
+            batch = load_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(batch.batch_doc.metadata["source_tables"][0]["id"], "progress_ledger")
+            self.assertEqual(batch.batch_doc.metadata["source_tables"][0]["key_columns"], ["row_id"])
+            query = batch.batch_doc.metadata["source_queries"][0]
+            self.assertEqual(query["id"], "current_task_row")
+            self.assertEqual(query["filters"][0]["value_from"], "task.row_id")
+            self.assertEqual(query["columns"], ["row_id", "frontend_surface", "backend_contract", "acceptance_signal"])
+            self.assertEqual(query["max_rows"], 10)
+
+
+def create_batch(repo: Path, *, with_source_table: bool = False, with_task_row_id: bool = False) -> Path:
     batch_dir = repo / "docs" / "dora" / "batches" / "20260501A"
     tasks_dir = batch_dir / "tasks"
     tasks_dir.mkdir(parents=True)
     (repo / "docs" / "summaries").mkdir(parents=True)
     (repo / "docs" / "summaries" / "S1.5-P3-05.md").write_text("# Prior work\n", encoding="utf-8")
     (repo / "docs" / "design.md").write_text("# Design\n", encoding="utf-8")
+    if with_source_table:
+        (repo / "docs" / "progress").mkdir(parents=True, exist_ok=True)
+        (repo / "docs" / "progress" / "ledger.tsv").write_text(
+            "row_id\tfrontend_surface\tbackend_contract\tacceptance_signal\n"
+            "F97-036\tsrc/pages/forms/list/FormListPage.tsx\tGET /api/v1/forms\t真实接口响应驱动页面。\n",
+            encoding="utf-8",
+        )
+    source_context_frontmatter = (
+        """source_tables:
+  - id: progress_ledger
+    path: docs/progress/ledger.tsv
+    format: tsv
+    key_columns:
+      - row_id
+    required: true
+source_queries:
+  - id: current_task_row
+    table: progress_ledger
+    required: true
+    filters:
+      - column: row_id
+        op: equals
+        value_from: task.row_id
+    columns:
+      - row_id
+      - frontend_surface
+      - backend_contract
+      - acceptance_signal
+    max_rows: 10
+"""
+        if with_source_table
+        else ""
+    )
     (batch_dir / "batch.md").write_text(
-        """---
+        f"""---
 batch_id: 20260501A
 program_id: dora-context-assembly
 program_prefix: CTX
@@ -37,7 +85,7 @@ title: Dora 上下文装配第四阶段
 status: draft
 created_by: raymond
 created_at: 2026-05-01T21:30:00+08:00
----
+{source_context_frontmatter}---
 
 # 批次说明
 
@@ -52,8 +100,9 @@ created_at: 2026-05-01T21:30:00+08:00
 """,
         encoding="utf-8",
     )
+    task_row_frontmatter = "row_id: F97-036\n" if with_task_row_id else ""
     (tasks_dir / "DORA-CTX-20260501A-T01.md").write_text(
-        """---
+        f"""---
 task_id: DORA-CTX-20260501A-T01
 id_scheme: batch-native
 legacy_refs:
@@ -76,7 +125,7 @@ source_docs:
 source_summaries:
   - docs/summaries/S1.5-P3-05.md
 source_commits: []
----
+{task_row_frontmatter}---
 
 # 任务概要
 
