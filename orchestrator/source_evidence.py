@@ -13,6 +13,7 @@ _READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "r
 _REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
 _OUTPUT_REDIRECT_RE = re.compile(r"^(?:\d*)>>?|&>>?|>\|")
 _SHELL_SEGMENT_SEPARATORS = {"&&", "||", ";", "|"}
+_SHELL_COMMANDS = {"sh", "bash", "zsh", "dash", "ksh"}
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,7 @@ def _command_paths(
     for inner in _shell_wrapper_inner_commands(parts):
         paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
     segments = _simple_command_segments(parts)
-    if not segments or any(not _is_read_command(segment) for segment in segments):
+    if not segments or any(not _is_read_command(segment) or _has_output_redirection(segment) for segment in segments):
         return tuple(paths)
     for segment in segments:
         for part in _path_candidate_parts(segment):
@@ -239,6 +240,8 @@ def _split_command(command: str) -> list[str]:
 
 
 def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
+    if _command_name(parts) not in _SHELL_COMMANDS:
+        return ()
     commands: list[str] = []
     for index, part in enumerate(parts[:-1]):
         if part in {"-c", "-lc"}:
@@ -310,6 +313,10 @@ def _is_output_redirection_token(part: str) -> bool:
     return bool(_OUTPUT_REDIRECT_RE.match(part))
 
 
+def _has_output_redirection(parts: tuple[str, ...]) -> bool:
+    return any(_is_output_redirection_token(part) for part in parts)
+
+
 def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
     operands: list[str] = []
     pattern_seen = False
@@ -326,7 +333,7 @@ def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
 
 
 def _clean_token(token: str) -> str:
-    return token.strip().strip("\"'`,;()[]{}<>")
+    return token.strip()
 
 
 def _required_path_matches(

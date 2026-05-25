@@ -357,6 +357,29 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_non_shell_dash_c_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "true -c 'cat docs/design.md'",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
     def test_common_filename_token_satisfies_required_readme_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -639,7 +662,7 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
-    def test_cat_with_input_and_compact_redirect_counts_only_input(self):
+    def test_cat_with_input_and_compact_redirect_does_not_satisfy_any_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source = tmp_path / "docs" / "source.md"
@@ -673,10 +696,39 @@ class SourceEvidenceTest(unittest.TestCase):
                 required_paths=[output],
             )
 
-            self.assertIs(source_result.ok, True)
-            self.assertEqual(source_result.missing_paths, ())
+            self.assertIs(source_result.ok, False)
+            self.assertEqual(source_result.missing_paths, (source.resolve(),))
             self.assertIs(output_result.ok, False)
             self.assertEqual(output_result.missing_paths, (output.resolve(),))
+
+    def test_cat_with_output_redirect_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            for command in (
+                "cat docs/design.md >out.txt",
+                "cat docs/design.md 1>out.txt",
+                "cat docs/design.md 2>err.txt",
+            ):
+                with self.subTest(command=command):
+                    result = evaluate_source_evidence(
+                        events=[
+                            {
+                                "type": "item.completed",
+                                "item": {
+                                    "type": "command_execution",
+                                    "command": command,
+                                    "exit_code": 0,
+                                },
+                            }
+                        ],
+                        worktree_root=tmp_path,
+                        required_paths=[doc],
+                    )
+
+                    self.assertIs(result.ok, False)
+                    self.assertEqual(result.missing_paths, (doc.resolve(),))
 
     def test_rg_pattern_only_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -824,6 +876,29 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "cat docs/design.md:1",
+                            "exit_code": 0,
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_punctuated_token_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat 'docs/design.md)'",
                             "exit_code": 0,
                         },
                     }
