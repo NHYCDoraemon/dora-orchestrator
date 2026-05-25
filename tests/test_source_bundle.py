@@ -157,6 +157,44 @@ class SourceBundleTest(unittest.TestCase):
             slice_path = repo / ".dora" / "source-bundles" / "20260501B" / "DORA-PLN-20260501B-T01" / "slices" / "current_issue.tsv"
             self.assertEqual(slice_path.read_text(encoding="utf-8"), "task_id\nDORA-PLN-20260501B-T01\n")
 
+    def test_task_task_id_filter_uses_external_id_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text(
+                "task_id\tvalue\nDORA-PLN-20260501B-T01\tready\n",
+                encoding="utf-8",
+            )
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": True,
+                    }
+                ],
+                "source_queries": [
+                    {
+                        "id": "current_task",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "task_id", "op": "equals", "value_from": "task.task_id"}],
+                        "columns": ["task_id"],
+                        "max_rows": 10,
+                    }
+                ],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            slice_path = repo / ".dora" / "source-bundles" / "20260501B" / "DORA-PLN-20260501B-T01" / "slices" / "current_task.tsv"
+            self.assertEqual(slice_path.read_text(encoding="utf-8"), "task_id\nDORA-PLN-20260501B-T01\n")
+
     def test_duplicate_source_query_id_returns_not_ok(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()

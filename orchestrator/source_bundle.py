@@ -220,6 +220,8 @@ def _source_query_context(issue: Mapping[str, object]) -> dict[str, object]:
     issue_context = dict(issue)
     external_id = str(issue_context.get("external_id") or issue_context.get("task_id") or issue.get("key") or "")
     if external_id:
+        task_context.setdefault("external_id", external_id)
+        task_context.setdefault("task_id", external_id)
         issue_context.setdefault("external_id", external_id)
         issue_context.setdefault("task_id", external_id)
     return {"task": task_context, "issue": issue_context}
