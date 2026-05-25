@@ -89,7 +89,14 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
     slice_results: list[SliceResult] = []
     slice_manifest: list[dict[str, object]] = []
     required_slice_paths: list[Path] = []
+    seen_query_ids: set[str] = set()
+    seen_slice_paths: set[Path] = set()
     for query in source_queries:
+        if not query.id:
+            return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), "source query id is required")
+        if query.id in seen_query_ids:
+            return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), f"duplicate source query id: {query.id}")
+        seen_query_ids.add(query.id)
         table = tables_by_id.get(query.table)
         if table is None:
             message = f"source query references unknown table: {query.table}"
@@ -98,10 +105,14 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
             slice_results.append(SliceResult(False, "source_query_table", query.id, None, 0, (), message=message))
             continue
         output_path = bundle_root / "slices" / f"{_safe_segment(query.id)}.{table.format}"
+        if output_path in seen_slice_paths:
+            message = f"source query slice path conflicts: {_repo_or_abs(output_path, repo_root)}"
+            return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), message)
+        seen_slice_paths.add(output_path)
         result = render_query_slice(
             table=table,
             query=query,
-            context={"task": dict(issue)},
+            context=_source_query_context(issue),
             output_path=output_path,
         )
         slice_results.append(result)
@@ -202,6 +213,14 @@ def _source_queries(issue: Mapping[str, object]) -> tuple[SourceQuery, ...]:
             )
         )
     return tuple(queries)
+
+
+def _source_query_context(issue: Mapping[str, object]) -> dict[str, object]:
+    task_context = dict(issue)
+    issue_context = dict(issue)
+    if "external_id" not in issue_context and issue.get("key") is not None:
+        issue_context["external_id"] = str(issue.get("key") or "")
+    return {"task": task_context, "issue": issue_context}
 
 
 def _render_bundle_markdown(manifest: Mapping[str, object]) -> str:

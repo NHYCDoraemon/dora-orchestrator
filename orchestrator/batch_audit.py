@@ -267,7 +267,29 @@ def _audit_source_tables_and_queries(
             )
             invalid_tables.add(table.id)
 
+    valid_queries: list[SourceQuery] = []
+    seen_query_ids: set[str] = set()
+    seen_slice_names: set[str] = set()
     for query in queries:
+        if not query.id:
+            findings.append(
+                AuditFinding(
+                    code="source_query_id",
+                    message="source query id is required",
+                    path=str(batch.batch_doc.path),
+                )
+            )
+            continue
+        if query.id in seen_query_ids:
+            findings.append(
+                AuditFinding(
+                    code="source_query_id",
+                    message=f"duplicate source query id: {query.id}",
+                    path=str(batch.batch_doc.path),
+                )
+            )
+            continue
+        seen_query_ids.add(query.id)
         table = tables_by_id.get(query.table)
         if table is None:
             findings.append(
@@ -277,7 +299,20 @@ def _audit_source_tables_and_queries(
                     path=str(batch.batch_doc.path),
                 )
             )
-    return tables_by_id, queries, invalid_tables
+            continue
+        slice_name = f"{_safe_source_query_segment(query.id)}.{table.format}"
+        if slice_name in seen_slice_names:
+            findings.append(
+                AuditFinding(
+                    code="source_query_id",
+                    message=f"{query.id}: source query slice path conflicts: {slice_name}",
+                    path=str(batch.batch_doc.path),
+                )
+            )
+            continue
+        seen_slice_names.add(slice_name)
+        valid_queries.append(query)
+    return tables_by_id, tuple(valid_queries), invalid_tables
 
 
 def _audit_required_source_queries(
@@ -288,7 +323,9 @@ def _audit_required_source_queries(
     invalid_tables: set[str],
     findings: list[AuditFinding],
 ) -> None:
-    context = {"task": dict(task.metadata), "issue": {"external_id": task.task_id}}
+    issue_context = dict(task.metadata)
+    issue_context["external_id"] = task.task_id
+    context = {"task": dict(task.metadata), "issue": issue_context}
     for query in queries:
         if not query.required:
             continue
@@ -304,6 +341,13 @@ def _audit_required_source_queries(
         )
         if not result.ok:
             findings.append(AuditFinding(code=result.code, message=f"{query.id}: {result.message}", path=str(task.path)))
+
+
+def _safe_source_query_segment(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "-", value.strip()).strip("-_")
+    if clean in {"", ".", ".."}:
+        return "unknown"
+    return clean
 
 
 def _audit_progress_metadata(task: TaskIssueDraft, findings: list[AuditFinding]) -> None:

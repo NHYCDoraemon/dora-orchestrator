@@ -81,6 +81,85 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("current_task_row.tsv", bundle_text)
             self.assertNotIn("Use the real forms API.", bundle_text)
 
+    def test_issue_external_id_filter_matches_audit_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text(
+                "external_id\tvalue\nDORA-PLN-20260501B-T01\tready\n",
+                encoding="utf-8",
+            )
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": True,
+                    }
+                ],
+                "source_queries": [
+                    {
+                        "id": "current_issue",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "external_id", "op": "equals", "value_from": "issue.external_id"}],
+                        "columns": ["external_id"],
+                        "max_rows": 10,
+                    }
+                ],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            slice_path = repo / ".dora" / "source-bundles" / "20260501B" / "DORA-PLN-20260501B-T01" / "slices" / "current_issue.tsv"
+            self.assertEqual(slice_path.read_text(encoding="utf-8"), "external_id\nDORA-PLN-20260501B-T01\n")
+
+    def test_duplicate_source_query_id_returns_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text(
+                "row_id\tvalue\nA\tfirst\nB\tsecond\n",
+                encoding="utf-8",
+            )
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": True,
+                    }
+                ],
+                "source_queries": [
+                    {
+                        "id": "dup",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value": "A"}],
+                    },
+                    {
+                        "id": "dup",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value": "B"}],
+                    },
+                ],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertFalse(result.ok)
+            self.assertIn("duplicate source query id: dup", result.message)
+
     def test_required_source_table_without_query_is_required_read_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
