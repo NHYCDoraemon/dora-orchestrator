@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from orchestrator.batch_audit import audit_task_issue_batch
+from orchestrator.batch_hash import compute_batch_hash
 from tests.test_batch_loader import create_batch
 
 
@@ -124,3 +125,43 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
             self.assertFalse(any(finding.code == "source_query_column" for finding in result.findings))
+
+    def test_optional_missing_source_table_passes_audit_and_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8")
+                .replace("    required: true\nsource_queries:", "    required: false\nsource_queries:")
+                .replace("    required: true\n    filters:", "    required: false\n    filters:"),
+                encoding="utf-8",
+            )
+            (repo / "docs" / "progress" / "ledger.tsv").unlink()
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+            batch_hash = compute_batch_hash(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
+            self.assertTrue(batch_hash.startswith("sha256:"))
+
+    def test_missing_required_source_table_finding_is_not_duplicated_per_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            first_task = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            second_task = batch_dir / "tasks" / "DORA-CTX-20260501A-T02.md"
+            second_task.write_text(
+                first_task.read_text(encoding="utf-8")
+                .replace("task_id: DORA-CTX-20260501A-T01", "task_id: DORA-CTX-20260501A-T02")
+                .replace("sequence: 1", "sequence: 2"),
+                encoding="utf-8",
+            )
+            (repo / "docs" / "progress" / "ledger.tsv").unlink()
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(
+                sum(1 for finding in result.findings if finding.code == "source_table_not_found"),
+                1,
+            )

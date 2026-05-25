@@ -25,7 +25,7 @@ def compute_batch_hash(batch_dir: Path, *, repo_root: Path | None = None) -> str
             batch.batch_doc.path,
             json.dumps(table.to_issue_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"),
         )
-        _hash_file(digest, resolve_repo_path(batch.repo_root, table.path))
+        _hash_source_table_file(digest, resolve_repo_path(batch.repo_root, table.path))
     for query in source_queries_from_batch(batch):
         _hash_bytes(
             digest,
@@ -45,6 +45,14 @@ def compute_batch_hash(batch_dir: Path, *, repo_root: Path | None = None) -> str
 def _hash_file(digest: "hashlib._Hash", path: Path) -> None:
     resolved = path.resolve()
     _hash_bytes(digest, resolved, resolved.read_bytes())
+
+
+def _hash_source_table_file(digest: "hashlib._Hash", path: Path) -> None:
+    resolved = path.resolve()
+    if resolved.is_file():
+        _hash_file(digest, resolved)
+    else:
+        digest.update(f"missing_source_table\0{resolved}\0".encode("utf-8"))
 
 
 def _hash_bytes(digest: "hashlib._Hash", path: Path, content: bytes) -> None:

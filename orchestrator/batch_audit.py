@@ -15,7 +15,7 @@ from .batch_models import (
     TaskIssueBatch,
     TaskIssueDraft,
 )
-from .source_context import resolve_repo_path, source_queries_from_batch, source_tables_from_batch
+from .source_context import SourceQuery, SourceTable, resolve_repo_path, source_queries_from_batch, source_tables_from_batch
 from .source_slicing import render_query_slice
 
 
@@ -45,6 +45,7 @@ def audit_task_issue_batch(
     findings: list[AuditFinding] = []
     _audit_batch_metadata(batch, findings)
     _audit_batch_language(batch, findings)
+    source_tables, source_queries, invalid_source_tables = _audit_source_tables_and_queries(batch, findings)
     task_ids = {task.task_id for task in batch.tasks}
     for task in batch.tasks:
         _audit_task_metadata(batch, task, task_ids, findings)
@@ -52,7 +53,7 @@ def audit_task_issue_batch(
         _audit_issue_packet_sections(task, findings)
         _audit_task_language(task, findings)
         _audit_source_paths(batch, task, findings)
-        _audit_source_tables_and_queries(batch, task, findings)
+        _audit_required_source_queries(batch, task, source_tables, source_queries, invalid_source_tables, findings)
 
     planned_cycles = sorted({task.cycle for task in batch.tasks if task.cycle})
     status = "FAIL" if findings else ("PASS_WITH_PLANNED_CREATES" if planned_cycles else "PASS")
@@ -228,17 +229,17 @@ def _audit_source_paths(batch: TaskIssueBatch, task: TaskIssueDraft, findings: l
 
 def _audit_source_tables_and_queries(
     batch: TaskIssueBatch,
-    task: TaskIssueDraft,
     findings: list[AuditFinding],
-) -> None:
+) -> tuple[dict[str, SourceTable], tuple[SourceQuery, ...], set[str]]:
     try:
         tables = source_tables_from_batch(batch)
         queries = source_queries_from_batch(batch)
     except ValueError as exc:
         findings.append(AuditFinding(code="source_context", message=str(exc), path=str(batch.batch_doc.path)))
-        return
+        return {}, (), set()
 
-    tables_by_id = {}
+    tables_by_id: dict[str, SourceTable] = {}
+    invalid_tables: set[str] = set()
     for table in tables:
         if not table.id:
             findings.append(
@@ -254,6 +255,7 @@ def _audit_source_tables_and_queries(
                     path=str(batch.batch_doc.path),
                 )
             )
+            invalid_tables.add(table.id)
         table_path = resolve_repo_path(batch.repo_root, table.path)
         if table.required and not table_path.is_file():
             findings.append(
@@ -263,8 +265,8 @@ def _audit_source_tables_and_queries(
                     path=str(batch.batch_doc.path),
                 )
             )
+            invalid_tables.add(table.id)
 
-    context = {"task": dict(task.metadata), "issue": {"external_id": task.task_id}}
     for query in queries:
         table = tables_by_id.get(query.table)
         if table is None:
@@ -272,11 +274,26 @@ def _audit_source_tables_and_queries(
                 AuditFinding(
                     code="source_query_table",
                     message=f"{query.id}: query references unknown source table: {query.table}",
-                    path=str(task.path),
+                    path=str(batch.batch_doc.path),
                 )
             )
-            continue
+    return tables_by_id, queries, invalid_tables
+
+
+def _audit_required_source_queries(
+    batch: TaskIssueBatch,
+    task: TaskIssueDraft,
+    tables_by_id: dict[str, SourceTable],
+    queries: tuple[SourceQuery, ...],
+    invalid_tables: set[str],
+    findings: list[AuditFinding],
+) -> None:
+    context = {"task": dict(task.metadata), "issue": {"external_id": task.task_id}}
+    for query in queries:
         if not query.required:
+            continue
+        table = tables_by_id.get(query.table)
+        if table is None or query.table in invalid_tables:
             continue
         result = render_query_slice(
             table=replace(table, path=str(resolve_repo_path(batch.repo_root, table.path))),

@@ -61,17 +61,17 @@ def render_query_slice(
                 return _fail(query, "source_query_filter", message, columns=selected_columns)
             if match:
                 rows.append({column: row.get(column) or "" for column in selected_columns})
+                if len(rows) > query.max_rows:
+                    return _fail(
+                        query,
+                        "source_query_too_many_rows",
+                        f"source query returned {len(rows)} rows, max_rows is {query.max_rows}",
+                        columns=selected_columns,
+                        row_count=len(rows),
+                    )
 
     if query.required and not rows:
         return _fail(query, "source_query_empty", "required source query returned no rows", columns=selected_columns)
-    if len(rows) > query.max_rows:
-        return _fail(
-            query,
-            "source_query_too_many_rows",
-            f"source query returned {len(rows)} rows, max_rows is {query.max_rows}",
-            columns=selected_columns,
-            row_count=len(rows),
-        )
 
     if not write_output:
         return SliceResult(

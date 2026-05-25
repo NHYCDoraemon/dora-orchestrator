@@ -172,3 +172,36 @@ class SourceSlicingTest(unittest.TestCase):
 
             self.assertIs(result.ok, False)
             self.assertEqual(result.code, "source_query_filter")
+
+    def test_query_too_many_rows_does_not_write_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            table_path = tmp_path / "ledger.tsv"
+            table_path.write_text(
+                "row_id\tfrontend_surface\n"
+                "F97-036\tsrc/One.tsx\n"
+                "F97-036\tsrc/Two.tsx\n",
+                encoding="utf-8",
+            )
+            table = SourceTable("progress_ledger", str(table_path), "tsv", ("row_id",), True)
+            query = SourceQuery(
+                id="current_task_row",
+                table="progress_ledger",
+                required=True,
+                filters=({"column": "row_id", "op": "equals", "value_from": "task.row_id"},),
+                columns=("row_id", "frontend_surface"),
+                max_rows=1,
+            )
+            output_path = tmp_path / "slice.tsv"
+
+            result = render_query_slice(
+                table=table,
+                query=query,
+                context={"task": {"row_id": "F97-036"}},
+                output_path=output_path,
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.code, "source_query_too_many_rows")
+            self.assertEqual(result.row_count, 2)
+            self.assertFalse(output_path.exists())
