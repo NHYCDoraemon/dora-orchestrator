@@ -415,6 +415,46 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
+    def test_sed_combined_in_place_flag_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "bash_sed_combined_in_place",
+                                    "name": "Bash",
+                                    "input": {"command": "sed -ni '' -e p docs/design.md"},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "bash_sed_combined_in_place",
+                                    "content": "edited",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
     def test_sed_print_command_satisfies_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

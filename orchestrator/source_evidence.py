@@ -278,7 +278,12 @@ def _command_name(parts: list[str]) -> str:
 
 
 def _sed_is_in_place(parts: list[str]) -> bool:
-    return any(part == "-i" or part.startswith("-i.") or part.startswith("--in-place") for part in parts[1:])
+    for part in parts[1:]:
+        if part.startswith("--in-place"):
+            return True
+        if part.startswith("-") and not part.startswith("--") and "i" in part[1:]:
+            return True
+    return False
 
 
 def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
