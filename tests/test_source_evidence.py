@@ -337,6 +337,88 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, False)
             self.assertEqual(result.missing_paths, (doc.resolve(),))
 
+    def test_cat_compact_redirect_write_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat >docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_cat_compact_append_redirect_write_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat >>docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_cat_with_input_and_compact_redirect_counts_only_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "docs" / "source.md"
+            output = tmp_path / "docs" / "design.md"
+
+            source_result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/source.md >docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[source],
+            )
+            output_result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/source.md >docs/design.md",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[output],
+            )
+
+            self.assertIs(source_result.ok, True)
+            self.assertEqual(source_result.missing_paths, ())
+            self.assertIs(output_result.ok, False)
+            self.assertEqual(output_result.missing_paths, (output.resolve(),))
+
     def test_rg_pattern_only_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

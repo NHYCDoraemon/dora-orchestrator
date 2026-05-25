@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 
 _READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "rg", "awk"}
 _REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
+_OUTPUT_REDIRECT_RE = re.compile(r"^(?:\d*)>>?|&>>?|>\|")
 _SHELL_SEGMENT_SEPARATORS = {"&&", "||", ";", "|"}
 
 
@@ -134,6 +135,8 @@ def _command_paths(
         if not _is_read_command(segment):
             continue
         for part in _path_candidate_parts(segment):
+            if _is_output_redirection_token(part):
+                break
             token = _clean_token(part)
             paths.extend(_required_path_matches(token, worktree_root, required_paths, relative_required_paths))
     return tuple(paths)
@@ -209,6 +212,10 @@ def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
 
 def _looks_like_awk_program(part: str) -> bool:
     return "{" in part or "}" in part
+
+
+def _is_output_redirection_token(part: str) -> bool:
+    return bool(_OUTPUT_REDIRECT_RE.match(part))
 
 
 def _grep_file_operands(parts: list[str]) -> tuple[str, ...]:
