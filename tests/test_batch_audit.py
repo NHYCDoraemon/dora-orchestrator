@@ -222,3 +222,24 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "FAIL")
             self.assertTrue(any(finding.code == "source_query_id" and "slice path conflicts" in finding.message for finding in result.findings))
+
+    def test_task_external_id_filter_matches_runtime_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            (repo / "docs" / "progress" / "ledger.tsv").write_text(
+                "task_id\tfrontend_surface\tbackend_contract\tacceptance_signal\n"
+                "DORA-CTX-20260501A-T01\tsrc/App.tsx\tGET /ctx\t验收信号。\n",
+                encoding="utf-8",
+            )
+            batch_path = batch_dir / "batch.md"
+            text = batch_path.read_text(encoding="utf-8")
+            text = text.replace("column: row_id", "column: task_id")
+            text = text.replace("value_from: task.row_id", "value_from: task.external_id")
+            text = text.replace("- row_id", "- task_id")
+            batch_path.write_text(text, encoding="utf-8")
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
+            self.assertFalse(any(finding.code == "source_query_filter" for finding in result.findings))

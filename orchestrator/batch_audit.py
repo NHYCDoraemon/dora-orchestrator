@@ -324,9 +324,11 @@ def _audit_required_source_queries(
     invalid_tables: set[str],
     findings: list[AuditFinding],
 ) -> None:
+    task_context = dict(task.metadata)
+    task_context["external_id"] = task.task_id
     issue_context = dict(task.metadata)
     issue_context["external_id"] = task.task_id
-    context = {"task": dict(task.metadata), "issue": issue_context}
+    context = {"task": task_context, "issue": issue_context}
     for query in queries:
         if not query.required:
             continue
