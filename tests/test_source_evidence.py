@@ -206,6 +206,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": ["cat", "docs/design.md"],
+                            "exit_code": 0,
                         },
                     },
                 ],
@@ -228,6 +229,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "cat src/app.py",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -237,6 +239,29 @@ class SourceEvidenceTest(unittest.TestCase):
 
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
+
+    def test_codex_completed_command_without_exit_code_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat docs/design.md",
+                            "status": "completed",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
 
     def test_codex_failed_command_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -321,6 +346,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "/bin/zsh -lc 'cat docs/design.md'",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -452,6 +478,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "cat Makefile",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -585,6 +612,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "cat docs/source.md >docs/design.md",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -644,6 +672,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "rg TODO src/api/forms.ts",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -688,6 +717,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "grep TODO src/api/forms.ts",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -776,6 +806,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "rm README.md && cat docs/design.md",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -798,6 +829,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "cat README.md | grep TODO docs/design.md",
+                            "exit_code": 0,
                         },
                     }
                 ],
@@ -864,6 +896,7 @@ class SourceEvidenceTest(unittest.TestCase):
                         "item": {
                             "type": "command_execution",
                             "command": "rm README.md&&cat docs/design.md",
+                            "exit_code": 0,
                         },
                     }
                 ],
