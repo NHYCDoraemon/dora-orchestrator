@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+_READ_COMMANDS = {"cat", "sed", "nl", "head", "tail", "less", "more", "grep", "rg", "awk"}
+_REDIRECT_OPERATORS = {">", ">>", ">|", "<>", "2>", "2>>", "&>", "&>>"}
+
 
 @dataclass(frozen=True)
 class SourceEvidenceResult:
@@ -124,11 +127,12 @@ def _command_paths(
         return ()
 
     paths: list[Path] = []
-    for part in parts:
-        token = _clean_token(part)
-        paths.extend(_required_path_matches(token, worktree_root, required_paths, relative_required_paths))
     for inner in _shell_wrapper_inner_commands(parts):
         paths.extend(_command_paths(inner, worktree_root, required_paths, relative_required_paths))
+    if _is_read_command(parts):
+        for part in _path_candidate_parts(parts):
+            token = _clean_token(part)
+            paths.extend(_required_path_matches(token, worktree_root, required_paths, relative_required_paths))
     return tuple(paths)
 
 
@@ -145,6 +149,38 @@ def _shell_wrapper_inner_commands(parts: list[str]) -> tuple[str, ...]:
         if part in {"-c", "-lc"}:
             commands.append(parts[index + 1])
     return tuple(commands)
+
+
+def _is_read_command(parts: list[str]) -> bool:
+    command = _command_name(parts)
+    if command not in _READ_COMMANDS:
+        return False
+    if any(part in _REDIRECT_OPERATORS for part in parts):
+        return False
+    return True
+
+
+def _command_name(parts: list[str]) -> str:
+    if not parts:
+        return ""
+    return Path(parts[0]).name
+
+
+def _path_candidate_parts(parts: list[str]) -> tuple[str, ...]:
+    command = _command_name(parts)
+    candidates = parts[1:]
+    if command == "awk":
+        for index, part in enumerate(candidates):
+            if part == "--":
+                return tuple(candidates[index + 1:])
+            if _looks_like_awk_program(part):
+                return tuple(candidates[index + 1:])
+        return ()
+    return tuple(candidates)
+
+
+def _looks_like_awk_program(part: str) -> bool:
+    return "{" in part or "}" in part
 
 
 def _clean_token(token: str) -> str:
