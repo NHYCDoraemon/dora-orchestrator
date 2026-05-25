@@ -141,7 +141,9 @@ def _command_paths(
 
 def _split_command(command: str) -> list[str]:
     try:
-        return shlex.split(command)
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        return list(lexer)
     except ValueError:
         return command.split()
 
