@@ -54,7 +54,7 @@ def evaluate_source_evidence(
     root = worktree_root.resolve()
     required = tuple(_normalize_path(path, root) for path in required_paths)
     relative_required = _required_relative_paths(required, root)
-    observed = _unique_paths(path for event in events for path in _event_paths(event, root, required, relative_required))
+    observed = _observed_paths(events, root, required, relative_required)
     observed_set = set(observed)
     missing = tuple(path for path in required if path not in observed_set)
     ok = not missing
@@ -71,13 +71,42 @@ def evaluate_source_evidence(
     )
 
 
-def _event_paths(
-    event: Mapping[str, Any],
+def _observed_paths(
+    events: Iterable[Mapping[str, Any]],
     worktree_root: Path,
     required_paths: tuple[Path, ...],
     relative_required_paths: Mapping[str, Path],
 ) -> tuple[Path, ...]:
-    paths: list[Path] = []
+    codex_paths: list[Path] = []
+    claude_tool_paths: dict[str, tuple[Path, ...]] = {}
+    successful_tool_ids: set[str] = set()
+
+    for event in events:
+        _collect_claude_tool_uses(
+            event,
+            worktree_root,
+            required_paths,
+            relative_required_paths,
+            claude_tool_paths,
+        )
+        successful_tool_ids.update(_successful_claude_tool_result_ids(event))
+        codex_paths.extend(_codex_completed_command_paths(event, worktree_root, required_paths, relative_required_paths))
+
+    claude_paths = [
+        path
+        for tool_id in successful_tool_ids
+        for path in claude_tool_paths.get(tool_id, ())
+    ]
+    return _unique_paths([*codex_paths, *claude_paths])
+
+
+def _collect_claude_tool_uses(
+    event: Mapping[str, Any],
+    worktree_root: Path,
+    required_paths: tuple[Path, ...],
+    relative_required_paths: Mapping[str, Path],
+    tool_paths: dict[str, tuple[Path, ...]],
+) -> None:
 
     message = event.get("message")
     if isinstance(message, Mapping):
@@ -92,18 +121,73 @@ def _event_paths(
                 inp = block.get("input")
                 if not isinstance(inp, Mapping):
                     continue
+                tool_id = str(block.get("id") or "")
+                if not tool_id:
+                    continue
+                paths: list[Path] = []
                 if name in {"Read", "Grep"}:
                     paths.extend(_normalize_path(path, worktree_root) for path in _input_path_values(inp))
                 elif name == "Bash":
                     paths.extend(_command_paths(inp.get("command"), worktree_root, required_paths, relative_required_paths))
+                if paths:
+                    tool_paths[tool_id] = tuple(paths)
 
+
+def _successful_claude_tool_result_ids(event: Mapping[str, Any]) -> tuple[str, ...]:
+    ids: list[str] = []
+    if event.get("type") != "user":
+        return ()
+    message = event.get("message")
+    if not isinstance(message, Mapping):
+        return ()
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ()
+    for block in content:
+        if not isinstance(block, Mapping):
+            continue
+        if block.get("type") != "tool_result":
+            continue
+        tool_id = str(block.get("tool_use_id") or "")
+        if tool_id and _tool_result_success(block):
+            ids.append(tool_id)
+    return tuple(ids)
+
+
+def _tool_result_success(block: Mapping[str, Any]) -> bool:
+    if block.get("is_error") is True:
+        return False
+    if "content" not in block:
+        return False
+    content = block.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return bool(content)
+    if isinstance(content, Mapping):
+        return bool(content)
+    return content is not None
+
+
+def _codex_completed_command_paths(
+    event: Mapping[str, Any],
+    worktree_root: Path,
+    required_paths: tuple[Path, ...],
+    relative_required_paths: Mapping[str, Path],
+) -> tuple[Path, ...]:
+    if event.get("type") != "item.completed":
+        return ()
     item = event.get("item")
     if isinstance(item, Mapping):
+        if item.get("type") != "command_execution":
+            return ()
+        status = str(item.get("status") or "completed")
+        if status != "completed":
+            return ()
         command = item.get("command")
         if command is not None:
-            paths.extend(_command_paths(command, worktree_root, required_paths, relative_required_paths))
-
-    return tuple(paths)
+            return _command_paths(command, worktree_root, required_paths, relative_required_paths)
+    return ()
 
 
 def _input_path_values(inp: Mapping[str, Any]) -> tuple[Path, ...]:

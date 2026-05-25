@@ -68,21 +68,38 @@ def _required_read_paths_from_prompt(prompt: str) -> list[str]:
 def _write_read_events_for_prompt(context) -> None:
     context.event_path.parent.mkdir(parents=True, exist_ok=True)
     prompt = context.prompt_path.read_text(encoding="utf-8")
-    events = [
-        {
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "name": "Read",
-                        "input": {"file_path": path},
-                    }
-                ]
-            },
-        }
-        for path in _required_read_paths_from_prompt(prompt)
-    ]
+    events = []
+    for index, path in enumerate(_required_read_paths_from_prompt(prompt)):
+        tool_id = f"read_{index}"
+        events.append(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": "Read",
+                            "input": {"file_path": path},
+                        }
+                    ]
+                },
+            }
+        )
+        events.append(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": "read",
+                        }
+                    ]
+                },
+            }
+        )
     with context.event_path.open("w", encoding="utf-8") as f:
         for event in events:
             f.write(json.dumps(event, ensure_ascii=False, sort_keys=True))

@@ -18,13 +18,125 @@ class SourceEvidenceTest(unittest.TestCase):
                 path.write_text("x\n", encoding="utf-8")
             event_path = tmp_path / "events.ndjson"
             events = [
-                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": str(bundle)}}]}},
-                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": str(doc)}}]}},
-                {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": str(slice_file)}}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read_bundle", "name": "Read", "input": {"file_path": str(bundle)}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read_bundle", "content": "bundle"}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read_doc", "name": "Read", "input": {"file_path": str(doc)}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read_doc", "content": "doc"}]}},
+                {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "read_slice", "name": "Read", "input": {"file_path": str(slice_file)}}]}},
+                {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "read_slice", "content": "slice"}]}},
             ]
             event_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
 
             result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle, doc, slice_file])
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+
+    def test_claude_read_without_tool_result_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "read_doc",
+                                    "name": "Read",
+                                    "input": {"file_path": str(doc)},
+                                }
+                            ]
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_claude_read_with_error_tool_result_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "read_doc",
+                                    "name": "Read",
+                                    "input": {"file_path": str(doc)},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "read_doc",
+                                    "is_error": True,
+                                    "content": "failed",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (doc.resolve(),))
+
+    def test_claude_read_with_successful_tool_result_satisfies_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            doc = tmp_path / "docs" / "design.md"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "read_doc",
+                                    "name": "Read",
+                                    "input": {"file_path": str(doc)},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "read_doc",
+                                    "content": "contents",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                worktree_root=tmp_path,
+                required_paths=[doc],
+            )
 
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
@@ -81,12 +193,14 @@ class SourceEvidenceTest(unittest.TestCase):
                             "content": [
                                 {
                                     "type": "tool_use",
+                                    "id": "bash_bundle",
                                     "name": "Bash",
                                     "input": {"command": f"sed -n '1,80p' {bundle}"},
                                 }
                             ]
                         },
                     },
+                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "bash_bundle", "content": "bundle"}]}},
                     {
                         "type": "item.completed",
                         "item": {
@@ -124,6 +238,29 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_codex_started_command_does_not_satisfy_required_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            app = tmp_path / "src" / "app.py"
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "cat src/app.py",
+                            "status": "in_progress",
+                        },
+                    }
+                ],
+                worktree_root=tmp_path,
+                required_paths=[app],
+            )
+
+            self.assertIs(result.ok, False)
+            self.assertEqual(result.missing_paths, (app.resolve(),))
+
     def test_shell_wrapper_inner_command_path_satisfies_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -159,12 +296,14 @@ class SourceEvidenceTest(unittest.TestCase):
                             "content": [
                                 {
                                     "type": "tool_use",
+                                    "id": "bash_readme",
                                     "name": "Bash",
                                     "input": {"command": "sed -n '1,20p' README.md"},
                                 }
                             ]
                         },
-                    }
+                    },
+                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "bash_readme", "content": "readme"}]}},
                 ],
                 worktree_root=tmp_path,
                 required_paths=[readme],
@@ -186,12 +325,14 @@ class SourceEvidenceTest(unittest.TestCase):
                             "content": [
                                 {
                                     "type": "tool_use",
+                                    "id": "bash_sed_in_place",
                                     "name": "Bash",
                                     "input": {"command": "sed -i 's/a/b/' docs/design.md"},
                                 }
                             ]
                         },
-                    }
+                    },
+                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "bash_sed_in_place", "content": "edited"}]}},
                 ],
                 worktree_root=tmp_path,
                 required_paths=[doc],
@@ -213,12 +354,14 @@ class SourceEvidenceTest(unittest.TestCase):
                             "content": [
                                 {
                                     "type": "tool_use",
+                                    "id": "bash_sed_print",
                                     "name": "Bash",
                                     "input": {"command": "sed -n '1,20p' docs/design.md"},
                                 }
                             ]
                         },
-                    }
+                    },
+                    {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "bash_sed_print", "content": "doc"}]}},
                 ],
                 worktree_root=tmp_path,
                 required_paths=[doc],
@@ -652,8 +795,22 @@ class SourceEvidenceTest(unittest.TestCase):
                         "content": [
                             {
                                 "type": "tool_use",
+                                "id": "read_bundle",
                                 "name": "Read",
                                 "input": {"file_path": str(bundle)},
+                            }
+                        ]
+                    },
+                })
+                + "\n"
+                + json.dumps({
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "read_bundle",
+                                "content": "bundle",
                             }
                         ]
                     },
