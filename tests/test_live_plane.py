@@ -203,10 +203,10 @@ class LivePlaneClientTest(unittest.TestCase):
             "body": (
                 "# Gateway source\n\n"
                 "<!-- dora:metadata\n"
-                "{\"execution_packet_hash\": \n"
-                "dora:metadata -->\n"
+                "{\"execution_packet_hash\": \n\n"
             ),
             "verification_level": ["L1"],
+            "execution_packet_version": 1,
             "execution_packet_hash": "sha256:valid",
             "verification_commands": ["pytest tests/test_gateway.py -q"],
         }
@@ -220,6 +220,7 @@ class LivePlaneClientTest(unittest.TestCase):
             }
         )
 
+        self.assertEqual(adapted["execution_packet_version"], 1)
         self.assertEqual(adapted["execution_packet_hash"], "sha256:valid")
         self.assertEqual(adapted["verification_commands"], payload["verification_commands"])
 

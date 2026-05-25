@@ -929,25 +929,22 @@ def _extract_metadata_block(description_html: str) -> dict[str, Any]:
     text = html.unescape(description_html)
     if "<pre>" in text and "</pre>" in text:
         text = text.split("<pre>", 1)[1].split("</pre>", 1)[0]
-    metadata: dict[str, Any] = {}
-    search_at = 0
+    search_before = len(text)
     while True:
-        start = text.find(_DORA_METADATA_START, search_at)
-        if start == -1:
-            break
-        json_start = start + len(_DORA_METADATA_START)
-        end = text.find(_DORA_METADATA_END, json_start)
+        end = text.rfind(_DORA_METADATA_END, 0, search_before)
         if end == -1:
-            break
-        raw = text[json_start:end].strip()
-        search_at = end + len(_DORA_METADATA_END)
+            return {}
+        start = text.rfind(_DORA_METADATA_START, 0, end)
+        if start == -1:
+            return {}
+        raw = text[start + len(_DORA_METADATA_START) : end].strip()
+        search_before = start
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             continue
         if isinstance(parsed, dict):
-            metadata = {key: parsed[key] for key in _DORA_METADATA_KEYS if key in parsed}
-    return metadata
+            return {key: parsed[key] for key in _DORA_METADATA_KEYS if key in parsed}
 
 
 def _comment_html(body: str, *, marker: str | None = None, raw_html: bool = False) -> str:
