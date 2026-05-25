@@ -56,6 +56,38 @@ class BatchLoaderTest(unittest.TestCase):
 
             self.assertEqual(batch.batch_doc.metadata["feature_flag"], "true")
 
+    def test_rejects_unknown_source_query_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "    max_rows: 10\n",
+                    "    max_row: 10\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 29: max_row"):
+                load_task_issue_batch(batch_dir, repo_root=repo)
+
+    def test_rejects_unknown_source_table_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "    required: true\nsource_queries:\n",
+                    "    requiredd: false\nsource_queries:\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 15: requiredd"):
+                load_task_issue_batch(batch_dir, repo_root=repo)
+
     def test_rejects_unsupported_nested_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

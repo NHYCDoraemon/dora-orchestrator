@@ -7,6 +7,9 @@ from .batch_models import MarkdownDocument, SECTION_TITLE_ALIASES, TaskIssueBatc
 
 
 SECTION_RE = re.compile(r"^# (?P<title>.+?)\s*$", re.MULTILINE)
+SOURCE_TABLE_KEYS = {"id", "path", "format", "key_columns", "required"}
+SOURCE_QUERY_KEYS = {"id", "table", "required", "filters", "columns", "max_rows"}
+SOURCE_FILTER_KEYS = {"column", "op", "value", "value_from"}
 
 
 def load_task_issue_batch(batch_dir: Path, *, repo_root: Path | None = None) -> TaskIssueBatch:
@@ -125,6 +128,7 @@ def _parse_yaml_block(
             index,
             indent=indent,
             path=path,
+            allowed_keys=SOURCE_TABLE_KEYS,
             bool_scalar_keys={"required"},
             nested_scalar_lists={"key_columns"},
             nested_mapping_lists=set(),
@@ -135,6 +139,7 @@ def _parse_yaml_block(
             index,
             indent=indent,
             path=path,
+            allowed_keys=SOURCE_QUERY_KEYS,
             bool_scalar_keys={"required"},
             nested_scalar_lists={"columns"},
             nested_mapping_lists={"filters"},
@@ -172,6 +177,7 @@ def _parse_yaml_mapping_list(
     *,
     indent: int,
     path: Path,
+    allowed_keys: set[str],
     bool_scalar_keys: set[str],
     nested_scalar_lists: set[str],
     nested_mapping_lists: set[str],
@@ -190,6 +196,7 @@ def _parse_yaml_mapping_list(
                 index + 1,
                 indent=indent + 2,
                 path=path,
+                allowed_keys=allowed_keys,
                 bool_scalar_keys=bool_scalar_keys,
                 nested_scalar_lists=nested_scalar_lists,
                 nested_mapping_lists=nested_mapping_lists,
@@ -200,6 +207,7 @@ def _parse_yaml_mapping_list(
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = item_text.split(":", 1)
         key = key.strip()
+        _require_source_metadata_key(key, allowed_keys, path, line_no)
         item = {
             key: _parse_scalar(raw_value.strip(), parse_bool=key in bool_scalar_keys)
             if raw_value.strip()
@@ -211,6 +219,7 @@ def _parse_yaml_mapping_list(
             index,
             indent=indent + 2,
             path=path,
+            allowed_keys=allowed_keys,
             bool_scalar_keys=bool_scalar_keys,
             nested_scalar_lists=nested_scalar_lists,
             nested_mapping_lists=nested_mapping_lists,
@@ -226,6 +235,7 @@ def _parse_yaml_mapping_item(
     *,
     indent: int,
     path: Path,
+    allowed_keys: set[str],
     bool_scalar_keys: set[str],
     nested_scalar_lists: set[str],
     nested_mapping_lists: set[str],
@@ -244,6 +254,7 @@ def _parse_yaml_mapping_item(
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = text.split(":", 1)
         key = key.strip()
+        _require_source_metadata_key(key, allowed_keys, path, line_no)
         value = raw_value.strip()
         if value:
             out[key] = _parse_scalar(value, parse_bool=key in bool_scalar_keys)
@@ -257,6 +268,7 @@ def _parse_yaml_mapping_item(
                 index + 1,
                 indent=indent + 2,
                 path=path,
+                allowed_keys=SOURCE_FILTER_KEYS,
                 bool_scalar_keys=set(),
                 nested_scalar_lists=set(),
                 nested_mapping_lists=set(),
@@ -265,6 +277,11 @@ def _parse_yaml_mapping_item(
         else:
             raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
     return out, index
+
+
+def _require_source_metadata_key(key: str, allowed_keys: set[str], path: Path, line_no: int) -> None:
+    if key not in allowed_keys:
+        raise ValueError(f"unknown source metadata key in {path}: line {line_no}: {key}")
 
 
 def _parse_scalar(value: str, *, parse_bool: bool = False) -> object:
