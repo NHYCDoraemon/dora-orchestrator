@@ -207,7 +207,7 @@ def _parse_yaml_mapping_list(
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = item_text.split(":", 1)
         key = key.strip()
-        _require_source_metadata_key(key, allowed_keys, path, line_no)
+        _require_source_metadata_key(key, allowed_keys, path, line_no, item_text)
         item = {
             key: _parse_scalar(raw_value.strip(), parse_bool=key in bool_scalar_keys)
             if raw_value.strip()
@@ -254,7 +254,7 @@ def _parse_yaml_mapping_item(
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = text.split(":", 1)
         key = key.strip()
-        _require_source_metadata_key(key, allowed_keys, path, line_no)
+        _require_source_metadata_key(key, allowed_keys, path, line_no, text)
         value = raw_value.strip()
         if value:
             out[key] = _parse_scalar(value, parse_bool=key in bool_scalar_keys)
@@ -279,9 +279,15 @@ def _parse_yaml_mapping_item(
     return out, index
 
 
-def _require_source_metadata_key(key: str, allowed_keys: set[str], path: Path, line_no: int) -> None:
+def _require_source_metadata_key(
+    key: str,
+    allowed_keys: set[str],
+    path: Path,
+    line_no: int,
+    line_text: str,
+) -> None:
     if key not in allowed_keys:
-        raise ValueError(f"unknown source metadata key in {path}: line {line_no}: {key}")
+        raise ValueError(f"unknown source metadata key in {path}: line {line_no}: {line_text}")
 
 
 def _parse_scalar(value: str, *, parse_bool: bool = False) -> object:

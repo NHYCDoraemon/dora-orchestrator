@@ -69,7 +69,7 @@ class BatchLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 29: max_row"):
+            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 29: max_row: 10"):
                 load_task_issue_batch(batch_dir, repo_root=repo)
 
     def test_rejects_unknown_source_table_key(self):
@@ -85,7 +85,7 @@ class BatchLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 15: requiredd"):
+            with self.assertRaisesRegex(ValueError, r"unknown source metadata key.*line 15: requiredd: false"):
                 load_task_issue_batch(batch_dir, repo_root=repo)
 
     def test_rejects_unsupported_nested_frontmatter(self):
