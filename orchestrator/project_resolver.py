@@ -65,13 +65,19 @@ def resolve_project_config(
     # When --repo is explicit, prefer <repo>/.dora/project.json over cwd walk —
     # otherwise running `orchestrator status --repo /path/to/X` from inside
     # /path/to/Y silently picks up Y's project_slug.
-    if repo_root is not None and (slug is None or title is None):
+    if repo_root is not None and (
+        slug is None or title is None or not plane_project_id or not plane_workspace_slug
+    ):
         from_repo = _discover_in(repo_root)
         if from_repo:
             if slug is None:
                 slug = from_repo.get("slug")
             if title is None:
                 title = from_repo.get("title")
+            if not plane_project_id:
+                plane_project_id = str(from_repo.get("plane_project_id") or "")
+            if not plane_workspace_slug:
+                plane_workspace_slug = str(from_repo.get("plane_workspace_slug") or "")
 
     # Fallback: walk up from cwd
     if repo_root is None or slug is None or title is None:
@@ -83,6 +89,10 @@ def resolve_project_config(
                 slug = discovered.get("slug")
             if title is None:
                 title = discovered.get("title")
+            if not plane_project_id:
+                plane_project_id = str(discovered.get("plane_project_id") or "")
+            if not plane_workspace_slug:
+                plane_workspace_slug = str(discovered.get("plane_workspace_slug") or "")
 
     if repo_root is None:
         repo_root = Path(".").resolve()
@@ -143,6 +153,8 @@ def _discover_in(repo_root: Path) -> dict | None:
     return {
         "slug": data.get("project_slug", ""),
         "title": data.get("title", ""),
+        "plane_project_id": data.get("plane_project_id", ""),
+        "plane_workspace_slug": data.get("plane_workspace_slug", ""),
     }
 
 

@@ -130,6 +130,35 @@ class ResolveProjectConfigTest(unittest.TestCase):
             finally:
                 os.chdir(old_cwd)
 
+    def test_dora_project_json_discovery_includes_plane_routing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            dora_dir = repo / ".dora"
+            dora_dir.mkdir()
+            (dora_dir / "project.json").write_text(
+                json.dumps(
+                    {
+                        "project_slug": "tozoa",
+                        "title": "Tozoa",
+                        "plane_project_id": "tozoa-plane-id",
+                        "plane_workspace_slug": "doraemon",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            import os
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(str(repo))
+                result = resolve_project_config()
+                self.assertEqual(result.project_slug, "tozoa")
+                self.assertEqual(result.project_title, "Tozoa")
+                self.assertEqual(result.plane_project_id, "tozoa-plane-id")
+                self.assertEqual(result.plane_workspace_slug, "doraemon")
+            finally:
+                os.chdir(old_cwd)
+
 
 class ListAvailableBatchesTest(unittest.TestCase):
     def test_no_batches_dir(self):
