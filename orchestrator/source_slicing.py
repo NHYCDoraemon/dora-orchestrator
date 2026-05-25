@@ -32,7 +32,7 @@ def render_query_slice(
     write_output: bool = True,
 ) -> SliceResult:
     table_path = Path(table.path)
-    if not table_path.exists():
+    if not table_path.is_file():
         return _fail(query, "source_table_not_found", f"source table not found: {table.path}")
 
     delimiter = _delimiter(table.format)
@@ -126,6 +126,9 @@ def _row_matches(
         value, ok = _filter_value(source_filter, context)
         if not ok:
             return False, f"filter value_from path is missing: {source_filter.get('value_from')}"
+        valid, message = _validate_filter_value(op, value)
+        if not valid:
+            return False, message
 
         actual = row.get(column) or ""
         try:
@@ -153,6 +156,9 @@ def _validate_filters(
         value, ok = _filter_value(source_filter, context)
         if not ok:
             return f"filter value_from path is missing: {source_filter.get('value_from')}"
+        valid, message = _validate_filter_value(op, value)
+        if not valid:
+            return message
 
         if op == "regex":
             try:
@@ -168,6 +174,24 @@ def _filter_value(source_filter: dict[str, object], context: dict[str, Any]) -> 
     if "value" in source_filter:
         return source_filter.get("value"), True
     return None, False
+
+
+def _validate_filter_value(op: str, value: Any) -> tuple[bool, str]:
+    if op == "in":
+        if isinstance(value, (list, tuple)):
+            if all(_is_scalar(item) for item in value):
+                return True, ""
+            return False, "filter value must be a scalar or list of scalars"
+        if _is_scalar(value):
+            return True, ""
+        return False, "filter value must be a scalar or list of scalars"
+    if _is_scalar(value):
+        return True, ""
+    return False, "filter value must be a scalar"
+
+
+def _is_scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool))
 
 
 def _value_from_path(context: dict[str, Any], path: str) -> tuple[Any, bool]:
