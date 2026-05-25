@@ -192,3 +192,33 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "FAIL")
             self.assertTrue(any(finding.code == "source_query_id" and "duplicate" in finding.message for finding in result.findings))
+
+    def test_rejects_case_insensitive_source_query_slice_collision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            text = batch_path.read_text(encoding="utf-8")
+            text = text.replace(
+                "  - id: current_task_row\n",
+                "  - id: Current_Task_Row\n",
+            ).replace(
+                "    max_rows: 10\n---",
+                "    max_rows: 10\n"
+                "  - id: current_task_row\n"
+                "    table: progress_ledger\n"
+                "    required: true\n"
+                "    filters:\n"
+                "      - column: row_id\n"
+                "        op: equals\n"
+                "        value: OTHER\n"
+                "    columns:\n"
+                "      - row_id\n"
+                "    max_rows: 10\n---",
+            )
+            batch_path.write_text(text, encoding="utf-8")
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "source_query_id" and "slice path conflicts" in finding.message for finding in result.findings))

@@ -236,6 +236,47 @@ class SourceBundleTest(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("duplicate source query id: dup", result.message)
 
+    def test_case_insensitive_source_query_slice_collision_returns_not_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            table_path = repo / "ledger.tsv"
+            table_path.write_text(
+                "row_id\tvalue\nA\tfirst\nB\tsecond\n",
+                encoding="utf-8",
+            )
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [],
+                "source_tables": [
+                    {
+                        "id": "ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "required": True,
+                    }
+                ],
+                "source_queries": [
+                    {
+                        "id": "Foo",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value": "A"}],
+                    },
+                    {
+                        "id": "foo",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value": "B"}],
+                    },
+                ],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertFalse(result.ok)
+            self.assertIn("source query slice path conflicts", result.message)
+
     def test_required_source_table_without_query_is_required_read_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()

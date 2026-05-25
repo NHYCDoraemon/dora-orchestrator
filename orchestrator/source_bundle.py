@@ -90,7 +90,7 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
     slice_manifest: list[dict[str, object]] = []
     required_slice_paths: list[Path] = []
     seen_query_ids: set[str] = set()
-    seen_slice_paths: set[Path] = set()
+    seen_slice_paths: set[str] = set()
     for query in source_queries:
         if not query.id:
             return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), "source query id is required")
@@ -105,10 +105,11 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
             slice_results.append(SliceResult(False, "source_query_table", query.id, None, 0, (), message=message))
             continue
         output_path = bundle_root / "slices" / f"{_safe_segment(query.id)}.{table.format}"
-        if output_path in seen_slice_paths:
+        slice_key = output_path.name.casefold()
+        if slice_key in seen_slice_paths:
             message = f"source query slice path conflicts: {_repo_or_abs(output_path, repo_root)}"
             return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), message)
-        seen_slice_paths.add(output_path)
+        seen_slice_paths.add(slice_key)
         result = render_query_slice(
             table=table,
             query=query,

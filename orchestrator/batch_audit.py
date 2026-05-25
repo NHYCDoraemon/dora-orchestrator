@@ -301,7 +301,8 @@ def _audit_source_tables_and_queries(
             )
             continue
         slice_name = f"{_safe_source_query_segment(query.id)}.{table.format}"
-        if slice_name in seen_slice_names:
+        slice_key = slice_name.casefold()
+        if slice_key in seen_slice_names:
             findings.append(
                 AuditFinding(
                     code="source_query_id",
@@ -310,7 +311,7 @@ def _audit_source_tables_and_queries(
                 )
             )
             continue
-        seen_slice_names.add(slice_name)
+        seen_slice_names.add(slice_key)
         valid_queries.append(query)
     return tables_by_id, tuple(valid_queries), invalid_tables
 
