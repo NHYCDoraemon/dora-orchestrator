@@ -226,8 +226,10 @@ def _command_paths(
 ) -> tuple[Path, ...]:
     if isinstance(command, list):
         parts = [str(item) for item in command]
+        if any(_contains_shell_substitution(part) for part in parts):
+            return ()
     elif isinstance(command, str):
-        if _contains_command_substitution(command):
+        if _contains_shell_substitution(command):
             return ()
         parts = _split_command(command)
     else:
@@ -340,8 +342,8 @@ def _is_output_redirection_token(part: str) -> bool:
     return bool(_OUTPUT_REDIRECT_RE.match(part))
 
 
-def _contains_command_substitution(command: str) -> bool:
-    return "$(" in command or "`" in command
+def _contains_shell_substitution(command: str) -> bool:
+    return "$(" in command or "`" in command or "<(" in command or ">(" in command or "=(" in command
 
 
 def _has_output_redirection(parts: tuple[str, ...]) -> bool:
