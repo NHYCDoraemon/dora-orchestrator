@@ -1,10 +1,12 @@
 """Stable hashing for approved TaskIssueDraft batches."""
 
 import hashlib
+import json
 from pathlib import Path
 
 from .batch_loader import load_task_issue_batch
 from .batch_models import TaskIssueBatch, TaskIssueDraft
+from .source_context import resolve_repo_path, source_queries_from_batch, source_tables_from_batch
 
 
 def compute_batch_hash(batch_dir: Path, *, repo_root: Path | None = None) -> str:
@@ -17,6 +19,19 @@ def compute_batch_hash(batch_dir: Path, *, repo_root: Path | None = None) -> str
     preview = batch.path / "submit-preview.md"
     if preview.exists():
         _hash_file(digest, preview)
+    for table in source_tables_from_batch(batch):
+        _hash_bytes(
+            digest,
+            batch.batch_doc.path,
+            json.dumps(table.to_issue_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        )
+        _hash_file(digest, resolve_repo_path(batch.repo_root, table.path))
+    for query in source_queries_from_batch(batch):
+        _hash_bytes(
+            digest,
+            batch.batch_doc.path,
+            json.dumps(query.to_issue_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        )
     _hash_optional_file(digest, batch.repo_root / ".dora" / "project.json")
     for task in batch.tasks:
         for key in ("source_pages", "source_docs", "source_summaries"):
