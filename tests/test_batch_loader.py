@@ -27,13 +27,34 @@ class BatchLoaderTest(unittest.TestCase):
 
             batch = load_task_issue_batch(batch_dir, repo_root=repo)
 
-            self.assertEqual(batch.batch_doc.metadata["source_tables"][0]["id"], "progress_ledger")
-            self.assertEqual(batch.batch_doc.metadata["source_tables"][0]["key_columns"], ["row_id"])
+            table = batch.batch_doc.metadata["source_tables"][0]
+            self.assertEqual(table["id"], "progress_ledger")
+            self.assertEqual(table["key_columns"], ["row_id"])
+            self.assertIs(table["required"], True)
             query = batch.batch_doc.metadata["source_queries"][0]
             self.assertEqual(query["id"], "current_task_row")
+            self.assertIs(query["required"], True)
             self.assertEqual(query["filters"][0]["value_from"], "task.row_id")
             self.assertEqual(query["columns"], ["row_id", "frontend_surface", "backend_contract", "acceptance_signal"])
             self.assertEqual(query["max_rows"], 10)
+
+    def test_preserves_legacy_boolean_scalar_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "created_at: 2026-05-01T21:30:00+08:00\n",
+                    "created_at: 2026-05-01T21:30:00+08:00\n"
+                    "feature_flag: true\n",
+                ),
+                encoding="utf-8",
+            )
+
+            batch = load_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(batch.batch_doc.metadata["feature_flag"], "true")
 
     def test_rejects_unsupported_nested_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:

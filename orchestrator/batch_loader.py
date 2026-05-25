@@ -125,6 +125,7 @@ def _parse_yaml_block(
             index,
             indent=indent,
             path=path,
+            bool_scalar_keys={"required"},
             nested_scalar_lists={"key_columns"},
             nested_mapping_lists=set(),
         )
@@ -134,6 +135,7 @@ def _parse_yaml_block(
             index,
             indent=indent,
             path=path,
+            bool_scalar_keys={"required"},
             nested_scalar_lists={"columns"},
             nested_mapping_lists={"filters"},
         )
@@ -170,6 +172,7 @@ def _parse_yaml_mapping_list(
     *,
     indent: int,
     path: Path,
+    bool_scalar_keys: set[str],
     nested_scalar_lists: set[str],
     nested_mapping_lists: set[str],
 ) -> tuple[list[object], int]:
@@ -187,6 +190,7 @@ def _parse_yaml_mapping_list(
                 index + 1,
                 indent=indent + 2,
                 path=path,
+                bool_scalar_keys=bool_scalar_keys,
                 nested_scalar_lists=nested_scalar_lists,
                 nested_mapping_lists=nested_mapping_lists,
             )
@@ -195,8 +199,11 @@ def _parse_yaml_mapping_list(
         if ":" not in item_text:
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = item_text.split(":", 1)
+        key = key.strip()
         item = {
-            key.strip(): _parse_scalar(raw_value.strip()) if raw_value.strip() else []
+            key: _parse_scalar(raw_value.strip(), parse_bool=key in bool_scalar_keys)
+            if raw_value.strip()
+            else []
         }
         index += 1
         item, index = _parse_yaml_mapping_item(
@@ -204,6 +211,7 @@ def _parse_yaml_mapping_list(
             index,
             indent=indent + 2,
             path=path,
+            bool_scalar_keys=bool_scalar_keys,
             nested_scalar_lists=nested_scalar_lists,
             nested_mapping_lists=nested_mapping_lists,
             item=item,
@@ -218,6 +226,7 @@ def _parse_yaml_mapping_item(
     *,
     indent: int,
     path: Path,
+    bool_scalar_keys: set[str],
     nested_scalar_lists: set[str],
     nested_mapping_lists: set[str],
     item: dict[str, object] | None = None,
@@ -237,7 +246,7 @@ def _parse_yaml_mapping_item(
         key = key.strip()
         value = raw_value.strip()
         if value:
-            out[key] = _parse_scalar(value)
+            out[key] = _parse_scalar(value, parse_bool=key in bool_scalar_keys)
             index += 1
         elif key in nested_scalar_lists:
             nested, index = _parse_yaml_scalar_list(lines, index + 1, indent=indent + 2, path=path)
@@ -248,6 +257,7 @@ def _parse_yaml_mapping_item(
                 index + 1,
                 indent=indent + 2,
                 path=path,
+                bool_scalar_keys=set(),
                 nested_scalar_lists=set(),
                 nested_mapping_lists=set(),
             )
@@ -257,12 +267,12 @@ def _parse_yaml_mapping_item(
     return out, index
 
 
-def _parse_scalar(value: str) -> object:
+def _parse_scalar(value: str, *, parse_bool: bool = False) -> object:
     if value == "[]":
         return []
-    if value in {"true", "True"}:
+    if parse_bool and value in {"true", "True"}:
         return True
-    if value in {"false", "False"}:
+    if parse_bool and value in {"false", "False"}:
         return False
     if value.startswith('"') and value.endswith('"'):
         return value[1:-1]
