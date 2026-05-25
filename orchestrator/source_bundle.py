@@ -1,0 +1,302 @@
+"""Deterministic source bundle generation for Execution Packet v1."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping
+
+from .source_context import EXECUTION_PACKET_VERSION, SOURCE_DOC_KEYS, SourceQuery, SourceTable, hash_file, resolve_repo_path
+from .source_slicing import SliceResult, render_query_slice
+
+
+@dataclass(frozen=True)
+class SourceBundleResult:
+    ok: bool
+    bundle_root: Path
+    bundle_path: Path
+    manifest_path: Path
+    required_read_paths: tuple[Path, ...]
+    slice_results: tuple[SliceResult, ...]
+    message: str = ""
+
+
+def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) -> SourceBundleResult:
+    repo_root = worktree_root.resolve()
+    batch_id = _batch_id(issue)
+    task_key = _task_key(issue)
+    bundle_root = repo_root / ".dora" / "source-bundles" / _safe_segment(batch_id) / _safe_segment(task_key)
+    bundle_path = bundle_root / "source-bundle.md"
+    manifest_path = bundle_root / "manifest.json"
+
+    source_docs = _source_docs(issue, repo_root)
+    for doc in source_docs:
+        if doc["required"] and not Path(str(doc["absolute_path"])).is_file():
+            return _result(
+                False,
+                bundle_root,
+                bundle_path,
+                manifest_path,
+                (),
+                (),
+                f"required source doc not found: {doc['path']}",
+            )
+
+    try:
+        source_tables = _source_tables(issue, repo_root)
+        source_queries = _source_queries(issue)
+    except (TypeError, ValueError) as exc:
+        return _result(False, bundle_root, bundle_path, manifest_path, (), (), str(exc))
+
+    tables_by_id = {table.id: table for table in source_tables}
+    table_manifest = []
+    for table in source_tables:
+        table_path = Path(table.path)
+        if table.required and not table_path.is_file():
+            return _result(False, bundle_root, bundle_path, manifest_path, (), (), f"required source table not found: {table.path}")
+        table_manifest.append(
+            {
+                "id": table.id,
+                "path": _repo_or_abs(table_path, repo_root),
+                "absolute_path": str(table_path),
+                "format": table.format,
+                "key_columns": list(table.key_columns),
+                "required": table.required,
+                "sha256": table.sha256 or (hash_file(table_path) if table_path.is_file() else ""),
+            }
+        )
+
+    slice_results: list[SliceResult] = []
+    slice_manifest: list[dict[str, object]] = []
+    required_slice_paths: list[Path] = []
+    for query in source_queries:
+        table = tables_by_id.get(query.table)
+        if table is None:
+            message = f"source query references unknown table: {query.table}"
+            if query.required:
+                return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), message)
+            slice_results.append(SliceResult(False, "source_query_table", query.id, None, 0, (), message=message))
+            continue
+        output_path = bundle_root / "slices" / f"{_safe_segment(query.id)}.{table.format}"
+        result = render_query_slice(
+            table=table,
+            query=query,
+            context={"task": dict(issue)},
+            output_path=output_path,
+        )
+        slice_results.append(result)
+        if not result.ok:
+            if query.required:
+                return _result(False, bundle_root, bundle_path, manifest_path, (), tuple(slice_results), result.message)
+            continue
+        if result.output_path is not None:
+            slice_manifest.append(
+                {
+                    "query_id": result.query_id,
+                    "path": _repo_or_abs(result.output_path, repo_root),
+                    "absolute_path": str(result.output_path),
+                    "row_count": result.row_count,
+                    "columns": list(result.columns),
+                    "sha256": result.sha256,
+                    "required": query.required,
+                }
+            )
+            if query.required:
+                required_slice_paths.append(result.output_path)
+
+    required_doc_paths = [Path(str(doc["absolute_path"])) for doc in source_docs if doc["required"]]
+    required_read_paths = tuple([bundle_path, *required_doc_paths, *required_slice_paths])
+    manifest = {
+        "execution_packet_version": EXECUTION_PACKET_VERSION,
+        "batch_id": batch_id,
+        "task_key": task_key,
+        "source_docs": [_manifest_doc(doc, repo_root) for doc in source_docs],
+        "source_tables": table_manifest,
+        "source_queries": [query.to_issue_dict() for query in source_queries],
+        "slices": slice_manifest,
+        "required_read_paths": [str(path) for path in required_read_paths],
+    }
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    bundle_path.write_text(_render_bundle_markdown(manifest), encoding="utf-8")
+
+    return SourceBundleResult(
+        ok=True,
+        bundle_root=bundle_root,
+        bundle_path=bundle_path,
+        manifest_path=manifest_path,
+        required_read_paths=required_read_paths,
+        slice_results=tuple(slice_results),
+    )
+
+
+def _source_docs(issue: Mapping[str, object], repo_root: Path) -> list[dict[str, object]]:
+    docs: list[dict[str, object]] = []
+    for key in SOURCE_DOC_KEYS:
+        for item in _list_value(issue.get(key)):
+            if isinstance(item, Mapping):
+                path = str(item.get("path") or "")
+                required = _bool_value(item.get("required"), default=True)
+                sha256 = str(item.get("sha256") or "")
+                kind = str(item.get("kind") or key)
+            else:
+                path = str(item)
+                required = True
+                sha256 = ""
+                kind = key
+            absolute = resolve_repo_path(repo_root, path)
+            docs.append({"kind": kind, "path": path, "absolute_path": absolute, "required": required, "sha256": sha256})
+    return docs
+
+
+def _source_tables(issue: Mapping[str, object], repo_root: Path) -> tuple[SourceTable, ...]:
+    tables: list[SourceTable] = []
+    for item in _mapping_items(issue.get("source_tables"), "source_tables"):
+        table_path = str(item.get("path") or "")
+        resolved = resolve_repo_path(repo_root, table_path)
+        tables.append(
+            SourceTable(
+                id=str(item.get("id") or ""),
+                path=str(resolved),
+                format=str(item.get("format") or "tsv"),
+                key_columns=tuple(str(value) for value in _list_value(item.get("key_columns"))),
+                required=_bool_value(item.get("required"), default=True),
+                sha256=str(item.get("sha256") or ""),
+            )
+        )
+    return tuple(tables)
+
+
+def _source_queries(issue: Mapping[str, object]) -> tuple[SourceQuery, ...]:
+    queries: list[SourceQuery] = []
+    for item in _mapping_items(issue.get("source_queries"), "source_queries"):
+        queries.append(
+            SourceQuery(
+                id=str(item.get("id") or ""),
+                table=str(item.get("table") or ""),
+                required=_bool_value(item.get("required"), default=True),
+                filters=tuple(dict(value) for value in _mapping_items(item.get("filters"), "source_query.filters")),
+                columns=tuple(str(value) for value in _list_value(item.get("columns"))),
+                max_rows=int(item.get("max_rows") or 200),
+            )
+        )
+    return tuple(queries)
+
+
+def _render_bundle_markdown(manifest: Mapping[str, object]) -> str:
+    lines = [
+        "# Source Bundle",
+        "",
+        f"- execution_packet_version: {manifest['execution_packet_version']}",
+        f"- batch_id: {manifest['batch_id']}",
+        f"- task_key: {manifest['task_key']}",
+        "",
+        "## Required Reads",
+    ]
+    lines.extend(f"- `{path}`" for path in manifest["required_read_paths"])
+    lines.extend(["", "## Source Docs"])
+    for doc in manifest["source_docs"]:
+        lines.append(
+            f"- `{doc['path']}` required={doc['required']} sha256={doc['sha256']}"
+        )
+    lines.extend(["", "## Source Tables"])
+    for table in manifest["source_tables"]:
+        lines.append(
+            f"- `{table['path']}` id={table['id']} format={table['format']} required={table['required']} sha256={table['sha256']}"
+        )
+    lines.extend(["", "## Generated Slices"])
+    for item in manifest["slices"]:
+        lines.append(
+            f"- `{item['path']}` query_id={item['query_id']} rows={item['row_count']} sha256={item['sha256']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _manifest_doc(doc: Mapping[str, object], repo_root: Path) -> dict[str, object]:
+    absolute = Path(str(doc["absolute_path"]))
+    return {
+        "kind": doc["kind"],
+        "path": doc["path"],
+        "absolute_path": str(absolute),
+        "required": doc["required"],
+        "sha256": str(doc.get("sha256") or (hash_file(absolute) if absolute.is_file() else "")),
+    }
+
+
+def _batch_id(issue: Mapping[str, object]) -> str:
+    explicit = str(issue.get("batch_id") or "").strip()
+    if explicit:
+        return explicit
+    external_id = str(issue.get("external_id") or "")
+    match = re.search(r"(\d{8}[A-Z])", external_id)
+    if match:
+        return match.group(1)
+    return "unknown-batch"
+
+
+def _task_key(issue: Mapping[str, object]) -> str:
+    return str(issue.get("external_id") or issue.get("key") or "unknown-task")
+
+
+def _safe_segment(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
+    return clean or "unknown"
+
+
+def _repo_or_abs(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _list_value(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def _mapping_items(value: object, name: str) -> list[Mapping[str, object]]:
+    items = _list_value(value)
+    out: list[Mapping[str, object]] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{name} entries must be mappings")
+        out.append(item)
+    return out
+
+
+def _bool_value(value: object, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "yes", "1"}
+
+
+def _result(
+    ok: bool,
+    bundle_root: Path,
+    bundle_path: Path,
+    manifest_path: Path,
+    required_read_paths: tuple[Path, ...],
+    slice_results: tuple[SliceResult, ...],
+    message: str,
+) -> SourceBundleResult:
+    return SourceBundleResult(
+        ok=ok,
+        bundle_root=bundle_root,
+        bundle_path=bundle_path,
+        manifest_path=manifest_path,
+        required_read_paths=required_read_paths,
+        slice_results=slice_results,
+        message=message,
+    )

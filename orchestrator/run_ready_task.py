@@ -17,6 +17,7 @@ from .local_artifacts import create_run_artifacts
 from .plane_backends import create_plane_client
 from .plane_provisioner import provision_project
 from .spec_loader import load_project_spec
+from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
 from .task_graph import build_task_graph
 
 if TYPE_CHECKING:
@@ -171,6 +172,8 @@ def run_ready_batch_task(
         outcome = str(result.get("outcome", ""))
         if outcome == "no_ready":
             break
+        if outcome == "source_context_missing":
+            break
 
         # Circuit breaker: a "zero-progress" iteration is one where the
         # executor produced no commit AND did not return agent_done.
@@ -233,6 +236,32 @@ def _execute_one_task(
     if on_progress:
         on_progress("picked", {"external_id": external_id, "name": name, "priority": str(issue.get("priority", ""))})
 
+    if issue.get("execution_packet_version") != EXECUTION_PACKET_VERSION:
+        message = "Execution Packet v1 is missing; batch must be regenerated and resubmitted before executor claim."
+        _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+        if on_progress:
+            on_progress("source_context_missing", {"external_id": external_id, "message": message})
+        return {
+            "outcome": "source_context_missing",
+            "state": "Needs Input",
+            "run_id": run_id,
+            "external_id": external_id,
+            "issue": str(issue.get("key") or external_id),
+        }
+    source_bundle = create_source_bundle(issue=issue, worktree_root=config.target_repo)
+    if not source_bundle.ok:
+        message = source_bundle.message or "source context bundle generation failed"
+        _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+        if on_progress:
+            on_progress("source_context_missing", {"external_id": external_id, "message": message})
+        return {
+            "outcome": "source_context_missing",
+            "state": "Needs Input",
+            "run_id": run_id,
+            "external_id": external_id,
+            "issue": str(issue.get("key") or external_id),
+        }
+
     claimed = plane_client.claim_issue(config.project_slug, external_id, run_id)
     _emit(plane_client, config.project_slug, external_id, "dora-loop:claim",
           f"claimed by run_id={run_id}")
@@ -268,14 +297,30 @@ def _execute_one_task(
             repo_root = config.target_repo
             branch = f"orchestrator/{executor_name}/{claimed['key']}"
 
+        source_bundle = create_source_bundle(issue=claimed, worktree_root=repo_root)
+        if not source_bundle.ok:
+            message = source_bundle.message or "source context bundle generation failed"
+            _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+            _released = True
+            if on_progress:
+                on_progress("source_context_missing", {"external_id": external_id, "message": message})
+            return {
+                "outcome": "source_context_missing",
+                "state": "Needs Input",
+                "run_id": run_id,
+                "external_id": external_id,
+                "issue": str(claimed.get("key") or external_id),
+            }
+
         artifacts = create_run_artifacts(repo_root, run_id)
         if delivery is not None and delivery.enable_commit:
             prompt_text = _render_executor_prompt(
                 claimed, batch_id=_extract_batch_id(external_id),
-                branch=branch, worktree_path=delivery.worktree_path,
+                branch=branch, worktree_path=repo_root,
             )
         else:
             prompt_text = _render_batch_prompt(claimed)
+        prompt_text += _render_source_context_prompt(source_bundle)
         artifacts.prompt_path.write_text(prompt_text, encoding="utf-8")
 
         executor = get_executor(executor_name)
@@ -559,6 +604,22 @@ def _emit(plane_client, project_slug, external_id, marker, body):
         pass
 
 
+def _mark_source_context_missing(plane_client, project_slug: str, external_id: str, message: str) -> None:
+    if hasattr(plane_client, "add_label"):
+        try:
+            plane_client.add_label(project_slug, external_id, "dora:source-context-missing")
+        except (RuntimeError, KeyError):
+            pass
+    _emit(plane_client, project_slug, external_id, "dora-loop:source-context", message)
+    try:
+        plane_client.release_issue(project_slug, external_id, "Needs Input")
+        if hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
+            plane_client.issues[(project_slug, external_id)]["state"] = "Needs Input"
+            plane_client.issues[(project_slug, external_id)]["assignee"] = None
+    except (RuntimeError, KeyError):
+        pass
+
+
 def _format_stream_line(line: str) -> str | None:
     """Parse one Claude stream-json line into a single-line human-readable summary.
 
@@ -806,6 +867,27 @@ def _render_batch_prompt(issue: dict) -> str:
             return body if body.endswith("\n") else body + "\n"
     name = str(issue.get("name") or issue.get("external_id") or "")
     return f"# {name}\n"
+
+
+def _render_source_context_prompt(source_bundle: SourceBundleResult) -> str:
+    lines = [
+        "",
+        "## Source Context Contract",
+        "",
+        "Before editing, read every required path below. Treat these files as the source-of-truth context for this task.",
+        "",
+        "Required reads:",
+    ]
+    lines.extend(f"- `{path}`" for path in source_bundle.required_read_paths)
+    lines.extend(["", "Generated slices:"])
+    generated = [result for result in source_bundle.slice_results if result.ok and result.output_path is not None]
+    if generated:
+        for result in generated:
+            lines.append(f"- `{result.query_id}`: `{result.output_path}` ({result.row_count} rows)")
+    else:
+        lines.append("- none")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _render_executor_prompt(

@@ -5,10 +5,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 from orchestrator.config import OrchestratorConfig
+from orchestrator.delivery import DeliveryConfig, DeliveryResult
 from orchestrator.executor_protocol import ExecutorResult
 from orchestrator.executors.claude import _resolve_claude_binary
 from orchestrator.in_memory_plane import InMemoryPlaneClient
 from orchestrator.run_ready_task import _format_stream_line, _render_executor_prompt, run_ready_batch_task
+
+
+def _packet_metadata() -> dict[str, object]:
+    return {
+        "execution_packet_version": 1,
+        "source_docs": [],
+        "source_tables": [],
+        "source_queries": [],
+    }
 
 
 def _seed_batch_state(client: InMemoryPlaneClient) -> None:
@@ -36,6 +46,7 @@ def _seed_batch_state(client: InMemoryPlaneClient) -> None:
             "agent_hint": "noop",
             "verification_level": ["L1"],
             "verification_commands": ["true"],
+            **_packet_metadata(),
         },
     )
 
@@ -72,6 +83,7 @@ def _seed_progress_task(client: InMemoryPlaneClient, *, summary: str = "") -> No
             "ledger_update_rule": "F97-036 只有证据同步后才允许变更状态。",
             "no_go_signal": "使用 fixture/mock/MSW 写成功即 NO-GO。",
             "test_summary": summary,
+            **_packet_metadata(),
         },
     )
 
@@ -513,6 +525,206 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
         self.assertIn("needs:review", labels)
 
 
+class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
+    def test_missing_required_source_doc_blocks_before_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Needs source doc",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "noop",
+                "execution_packet_version": 1,
+                "source_docs": [{"kind": "source_docs", "path": "docs/missing.md", "required": True}],
+                "source_tables": [],
+                "source_queries": [],
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor") as get_executor:
+                result = run_ready_batch_task(config, plane_client=client, run_id="source-missing")
+
+        task_result = result["runs"][0]
+        issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
+        self.assertEqual(task_result["outcome"], "source_context_missing")
+        self.assertEqual(task_result["state"], "Needs Input")
+        self.assertEqual(issue["state"], "Needs Input")
+        self.assertIsNone(issue["assignee"])
+        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
+        self.assertIn("dora-loop:source-context", [comment["marker"] for comment in client.comments])
+        get_executor.assert_not_called()
+
+    def test_legacy_issue_without_execution_packet_blocks_before_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Legacy task",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "noop",
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor") as get_executor:
+                result = run_ready_batch_task(config, plane_client=client, run_id="legacy")
+
+        task_result = result["runs"][0]
+        issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
+        self.assertEqual(task_result["outcome"], "source_context_missing")
+        self.assertEqual(task_result["state"], "Needs Input")
+        self.assertEqual(issue["state"], "Needs Input")
+        self.assertIsNone(issue["assignee"])
+        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
+        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:source-context"]
+        self.assertEqual(len(marker_comments), 1)
+        self.assertIn("Execution Packet v1 is missing", marker_comments[0]["body"])
+        get_executor.assert_not_called()
+
+    def test_prompt_includes_source_context_contract_paths_and_slice(self):
+        captured = {}
+
+        class _FakeExecutor:
+            def run(self, context):
+                captured["prompt"] = context.prompt_path.read_text(encoding="utf-8")
+                return ExecutorResult("agent_done", "done", [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            (repo / "docs").mkdir()
+            (repo / "docs" / "design.md").write_text("# Design\n", encoding="utf-8")
+            (repo / "ledger.tsv").write_text(
+                "row_id\tfrontend_surface\nF97-036\tsrc/pages/forms/list/FormListPage.tsx\n",
+                encoding="utf-8",
+            )
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Use source packet",
+                "body": "# Task Summary\n\nUse the source context.\n",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "codex",
+                "verification_commands": ["true"],
+                "execution_packet_version": 1,
+                "batch_id": "B06",
+                "row_id": "F97-036",
+                "source_docs": [{"kind": "source_docs", "path": "docs/design.md", "required": True}],
+                "source_tables": [
+                    {
+                        "id": "progress_ledger",
+                        "path": "ledger.tsv",
+                        "format": "tsv",
+                        "key_columns": ["row_id"],
+                        "required": True,
+                    }
+                ],
+                "source_queries": [
+                    {
+                        "id": "current_task_row",
+                        "table": "progress_ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value_from": "task.row_id"}],
+                        "columns": ["row_id", "frontend_surface"],
+                        "max_rows": 10,
+                    }
+                ],
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="codex",
+                project_slug="dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="source-prompt")
+
+        self.assertEqual(result["runs"][0]["outcome"], "agent_done")
+        prompt = captured["prompt"]
+        self.assertIn("## Source Context Contract", prompt)
+        self.assertIn(str(repo / ".dora" / "source-bundles" / "B06" / "DORA-PLN-20260501B-T01" / "source-bundle.md"), prompt)
+        self.assertIn(str(repo / "docs" / "design.md"), prompt)
+        self.assertIn(str(repo / ".dora" / "source-bundles" / "B06" / "DORA-PLN-20260501B-T01" / "slices" / "current_task_row.tsv"), prompt)
+
+    def test_delivery_executor_prompt_uses_actual_batch_worktree_path(self):
+        captured = {}
+
+        class _FakeExecutor:
+            def run(self, context):
+                captured["prompt"] = context.prompt_path.read_text(encoding="utf-8")
+                return ExecutorResult("agent_done", "done", [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            (repo / "docs").mkdir()
+            (repo / "docs" / "design.md").write_text("# Design\n", encoding="utf-8")
+            worktree_root = repo / "worktrees"
+            actual_worktree = worktree_root / "dora" / "20260501B"
+            wrong_configured_worktree = worktree_root / "dora" / "WRONG"
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
+                "name": "Use delivery worktree",
+                "body": "# Task Summary\n\nUse the source context.\n",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "codex",
+                "verification_commands": ["true"],
+                "execution_packet_version": 1,
+                "source_docs": [{"kind": "source_docs", "path": "docs/design.md", "required": True}],
+                "source_tables": [],
+                "source_queries": [],
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="codex",
+                project_slug="dora",
+            )
+            delivery = DeliveryConfig(
+                repo_root=repo,
+                project_slug="dora",
+                batch_id="WRONG",
+                worktree_root=worktree_root,
+                enable_commit=True,
+            )
+
+            def _fake_ensure_worktree(_repo_root, wt_path, _branch, _base_branch, auto_clean=False):
+                wt_path.mkdir(parents=True)
+                (wt_path / "docs").mkdir()
+                (wt_path / "docs" / "design.md").write_text("# Design\n", encoding="utf-8")
+                return True, False
+
+            with (
+                patch("orchestrator.delivery.ensure_worktree", side_effect=_fake_ensure_worktree),
+                patch("orchestrator.delivery.run_delivery", return_value=DeliveryResult()),
+                patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()),
+            ):
+                result = run_ready_batch_task(config, plane_client=client, run_id="delivery-prompt", delivery=delivery)
+
+        self.assertEqual(result["runs"][0]["outcome"], "agent_no_changes")
+        self.assertIn(f"worktree at `{actual_worktree}`", captured["prompt"])
+        self.assertNotIn(f"worktree at `{wrong_configured_worktree}`", captured["prompt"])
+
+
 class RunReadyBatchTaskLoopTest(unittest.TestCase):
     def test_generated_batches_run_by_batch_then_task_sequence_before_priority(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -521,14 +733,17 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             client.upsert_issue("dora", "DORA-PLN-20260502A-T01", {
                 "name": "Later batch urgent", "issue_type": "task", "priority": "P1",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-PLN-20260501B-T02", {
                 "name": "Earlier batch task 2", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
                 "name": "Earlier batch task 1", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
@@ -556,10 +771,12 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
         client.upsert_issue("dora", "DORA-PLN-20260501B-T01", {
             "name": "Earlier running", "issue_type": "task", "priority": "P3",
             "depends_on": [], "agent_hint": "noop",
+            **_packet_metadata(),
         })
         client.upsert_issue("dora", "DORA-PLN-20260501B-T02", {
             "name": "Later ready", "issue_type": "task", "priority": "P1",
             "depends_on": [], "agent_hint": "noop",
+            **_packet_metadata(),
         })
         client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"] = "In Progress"
 
@@ -576,10 +793,12 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             client.upsert_issue("dora", "DORA-T01", {
                 "name": "Task 1", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-T02", {
                 "name": "Task 2", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
@@ -606,10 +825,12 @@ class RunReadyBatchTaskLoopTest(unittest.TestCase):
             client.upsert_issue("dora", "DORA-T01", {
                 "name": "Task 1", "issue_type": "task", "priority": "P3",
                 "depends_on": ["DORA-T02"],
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-T02", {
                 "name": "Task 2", "issue_type": "task", "priority": "P3",
                 "depends_on": ["DORA-T01"],
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
@@ -645,15 +866,18 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
                 "name": "Fails-1", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
                 "verification_commands": ["test -f /definitely/not/here/marker"],
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-T02", {
                 "name": "Fails-2", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
                 "verification_commands": ["test -f /definitely/not/there/either"],
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-T03", {
                 "name": "Should-never-run", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
@@ -690,10 +914,12 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
             client.upsert_issue("dora", "DORA-T01", {
                 "name": "T1", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
             client.upsert_issue("dora", "DORA-T02", {
                 "name": "T2", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
@@ -718,6 +944,7 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
                 "name": "Fail-1", "issue_type": "task", "priority": "P3",
                 "depends_on": [], "agent_hint": "noop",
                 "verification_commands": ["test -f /definitely/not/here"],
+                **_packet_metadata(),
             })
 
             config = OrchestratorConfig(
