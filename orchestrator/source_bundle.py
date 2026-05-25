@@ -218,8 +218,10 @@ def _source_queries(issue: Mapping[str, object]) -> tuple[SourceQuery, ...]:
 def _source_query_context(issue: Mapping[str, object]) -> dict[str, object]:
     task_context = dict(issue)
     issue_context = dict(issue)
-    if "external_id" not in issue_context and issue.get("key") is not None:
-        issue_context["external_id"] = str(issue.get("key") or "")
+    external_id = str(issue_context.get("external_id") or issue_context.get("task_id") or issue.get("key") or "")
+    if external_id:
+        issue_context.setdefault("external_id", external_id)
+        issue_context.setdefault("task_id", external_id)
     return {"task": task_context, "issue": issue_context}
 
 
