@@ -35,6 +35,25 @@ class BatchLoaderTest(unittest.TestCase):
             self.assertEqual(query["columns"], ["row_id", "frontend_surface", "backend_contract", "acceptance_signal"])
             self.assertEqual(query["max_rows"], 10)
 
+    def test_rejects_unsupported_nested_frontmatter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "created_at: 2026-05-01T21:30:00+08:00\n",
+                    "created_at: 2026-05-01T21:30:00+08:00\n"
+                    "unsupported:\n"
+                    "  nested:\n"
+                    "    key: value\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"unsupported nested YAML.*line"):
+                load_task_issue_batch(batch_dir, repo_root=repo)
+
 
 def create_batch(repo: Path, *, with_source_table: bool = False, with_task_row_id: bool = False) -> Path:
     batch_dir = repo / "docs" / "dora" / "batches" / "20260501A"

@@ -97,7 +97,13 @@ def _parse_simple_yaml(lines: list[str], path: Path) -> dict[str, object]:
             data[key] = _parse_scalar(value)
             index += 1
             continue
-        block, index = _parse_yaml_block(normalized, index + 1, parent_indent=0, path=path)
+        block, index = _parse_yaml_block(
+            normalized,
+            index + 1,
+            parent_indent=0,
+            path=path,
+            key=key,
+        )
         data[key] = block
     return data
 
@@ -108,16 +114,35 @@ def _parse_yaml_block(
     *,
     parent_indent: int,
     path: Path,
+    key: str,
 ) -> tuple[object, int]:
     if index >= len(lines) or lines[index][1] <= parent_indent:
         return [], index
-    _line_no, indent, text = lines[index]
+    line_no, indent, text = lines[index]
+    if key == "source_tables":
+        return _parse_yaml_mapping_list(
+            lines,
+            index,
+            indent=indent,
+            path=path,
+            nested_scalar_lists={"key_columns"},
+            nested_mapping_lists=set(),
+        )
+    if key == "source_queries":
+        return _parse_yaml_mapping_list(
+            lines,
+            index,
+            indent=indent,
+            path=path,
+            nested_scalar_lists={"columns"},
+            nested_mapping_lists={"filters"},
+        )
     if text.startswith("- "):
-        return _parse_yaml_list(lines, index, indent=indent, path=path)
-    return _parse_yaml_mapping(lines, index, indent=indent, path=path)
+        return _parse_yaml_scalar_list(lines, index, indent=indent, path=path)
+    raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
 
 
-def _parse_yaml_list(
+def _parse_yaml_scalar_list(
     lines: list[tuple[int, int, str]],
     index: int,
     *,
@@ -133,58 +158,79 @@ def _parse_yaml_list(
             raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
         item_text = text[2:].strip()
         if not item_text:
-            item, index = _parse_yaml_block(lines, index + 1, parent_indent=indent, path=path)
-            out.append(item)
-            continue
-        if ":" in item_text:
-            key, raw_value = item_text.split(":", 1)
-            item: dict[str, object] = {
-                key.strip(): _parse_scalar(raw_value.strip()) if raw_value.strip() else []
-            }
-            index += 1
-            while index < len(lines) and lines[index][1] > indent:
-                child_line_no, child_indent, child_text = lines[index]
-                if child_indent != indent + 2:
-                    raise ValueError(
-                        f"unsupported nested YAML in {path}: line {child_line_no}: {child_text}"
-                    )
-                if ":" not in child_text:
-                    raise ValueError(f"invalid YAML line in {path}: line {child_line_no}: {child_text}")
-                child_key, child_raw_value = child_text.split(":", 1)
-                child_key = child_key.strip()
-                child_value = child_raw_value.strip()
-                if child_value:
-                    item[child_key] = _parse_scalar(child_value)
-                    index += 1
-                else:
-                    nested, index = _parse_yaml_block(
-                        lines,
-                        index + 1,
-                        parent_indent=child_indent,
-                        path=path,
-                    )
-                    item[child_key] = nested
-            out.append(item)
-            continue
+            raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
         out.append(_parse_scalar(item_text))
         index += 1
     return out, index
 
 
-def _parse_yaml_mapping(
+def _parse_yaml_mapping_list(
     lines: list[tuple[int, int, str]],
     index: int,
     *,
     indent: int,
     path: Path,
+    nested_scalar_lists: set[str],
+    nested_mapping_lists: set[str],
+) -> tuple[list[object], int]:
+    out: list[object] = []
+    while index < len(lines):
+        line_no, current_indent, text = lines[index]
+        if current_indent < indent:
+            break
+        if current_indent != indent or not text.startswith("- "):
+            raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
+        item_text = text[2:].strip()
+        if not item_text:
+            item, index = _parse_yaml_mapping_item(
+                lines,
+                index + 1,
+                indent=indent + 2,
+                path=path,
+                nested_scalar_lists=nested_scalar_lists,
+                nested_mapping_lists=nested_mapping_lists,
+            )
+            out.append(item)
+            continue
+        if ":" not in item_text:
+            raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
+        key, raw_value = item_text.split(":", 1)
+        item = {
+            key.strip(): _parse_scalar(raw_value.strip()) if raw_value.strip() else []
+        }
+        index += 1
+        item, index = _parse_yaml_mapping_item(
+            lines,
+            index,
+            indent=indent + 2,
+            path=path,
+            nested_scalar_lists=nested_scalar_lists,
+            nested_mapping_lists=nested_mapping_lists,
+            item=item,
+        )
+        out.append(item)
+    return out, index
+
+
+def _parse_yaml_mapping_item(
+    lines: list[tuple[int, int, str]],
+    index: int,
+    *,
+    indent: int,
+    path: Path,
+    nested_scalar_lists: set[str],
+    nested_mapping_lists: set[str],
+    item: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], int]:
-    out: dict[str, object] = {}
+    out = {} if item is None else item
     while index < len(lines):
         line_no, current_indent, text = lines[index]
         if current_indent < indent:
             break
         if current_indent != indent:
             raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
+        if text.startswith("- "):
+            break
         if ":" not in text:
             raise ValueError(f"invalid YAML line in {path}: line {line_no}: {text}")
         key, raw_value = text.split(":", 1)
@@ -193,9 +239,21 @@ def _parse_yaml_mapping(
         if value:
             out[key] = _parse_scalar(value)
             index += 1
-        else:
-            nested, index = _parse_yaml_block(lines, index + 1, parent_indent=indent, path=path)
+        elif key in nested_scalar_lists:
+            nested, index = _parse_yaml_scalar_list(lines, index + 1, indent=indent + 2, path=path)
             out[key] = nested
+        elif key in nested_mapping_lists:
+            nested, index = _parse_yaml_mapping_list(
+                lines,
+                index + 1,
+                indent=indent + 2,
+                path=path,
+                nested_scalar_lists=set(),
+                nested_mapping_lists=set(),
+            )
+            out[key] = nested
+        else:
+            raise ValueError(f"unsupported nested YAML in {path}: line {line_no}: {text}")
     return out, index
 
 
