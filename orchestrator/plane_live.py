@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .batch_models import PROGRESS_METADATA_FIELDS
 from .issue_order import batch_sort_key, batch_task_order_key
 
 
@@ -949,6 +950,10 @@ def _issue_markdown(external_id: str, payload: dict[str, Any]) -> str:
         lines.append("forbidden_skills:")
         for skill in forbidden_skills:
             lines.append(f"  - {skill}")
+    for key in PROGRESS_METADATA_FIELDS:
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            lines.append(f"{key}: {value}")
     lines.append("verification_level: " + ("[]" if not payload.get("verification_level") else ""))
     for level in payload.get("verification_level") or []:
         lines.append(f"  - {level}")
@@ -1050,24 +1055,30 @@ def _strip_json_control_chars(text: str) -> str:
 
 def _adapt_issue(issue: dict[str, Any]) -> dict[str, Any]:
     adapted = dict(issue)
+    description_html = issue.get("description_html") or ""
     sequence_id = adapted.get("sequence_id")
     adapted.setdefault("key", f"DOR-{sequence_id}" if sequence_id is not None else adapted.get("external_id", ""))
     adapted.setdefault(
         "depends_on",
-        _extract_frontmatter_list(issue.get("description_html") or "", "depends_on"),
+        _extract_frontmatter_list(description_html, "depends_on"),
     )
     adapted.setdefault(
         "required_skills",
-        _extract_frontmatter_list(issue.get("description_html") or "", "required_skills"),
+        _extract_frontmatter_list(description_html, "required_skills"),
     )
     adapted.setdefault(
         "suggested_skills",
-        _extract_frontmatter_list(issue.get("description_html") or "", "suggested_skills"),
+        _extract_frontmatter_list(description_html, "suggested_skills"),
     )
     adapted.setdefault(
         "forbidden_skills",
-        _extract_frontmatter_list(issue.get("description_html") or "", "forbidden_skills"),
+        _extract_frontmatter_list(description_html, "forbidden_skills"),
     )
+    for key in PROGRESS_METADATA_FIELDS:
+        if not str(adapted.get(key) or "").strip():
+            value = _extract_frontmatter_value(description_html, key)
+            if value is not None:
+                adapted[key] = value
     return adapted
 
 

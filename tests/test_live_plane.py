@@ -93,6 +93,50 @@ class LivePlaneClientTest(unittest.TestCase):
         self.assertEqual(adapted["suggested_skills"], ["browser:browser"])
         self.assertEqual(adapted["forbidden_skills"], ["dora-plane"])
 
+    def test_live_issue_frontmatter_preserves_progress_metadata(self):
+        api = FakePlaneApi()
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        issue = client.upsert_issue(
+            "dora",
+            "PFE-P1FR-20260525C-T01",
+            {
+                "name": "F97-036 表单模板列表",
+                "body": "# 表单模板列表\n",
+                "priority": "P1",
+                "depends_on": [],
+                "progress_schema": "pfe-progress/v1",
+                "progress_task_id": "B06-F97-036-form-list",
+                "row_id": "F97-036",
+                "source_scope": "original-97",
+                "task_kind": "connect_or_contract",
+                "route_path": "/forms/list",
+                "backend_contract": "GET /api/v1/forms",
+                "frontend_surface": "src/pages/forms/list/FormListPage.tsx",
+                "requirement_signal": "用户能在 /forms/list 看到真实列表。",
+                "development_work": "接入 GET /api/v1/forms。",
+                "data_lineage": "GET /api/v1/forms -> src/api/forms.ts",
+                "acceptance_signal": "真实接口响应驱动页面。",
+                "verification_signal": "L1-L5 全绿。",
+                "ledger_update_rule": "证据同步后才允许变更状态。",
+                "no_go_signal": "mock-only 不可通过。",
+                "verification_level": ["L1"],
+            },
+        )
+
+        self.assertEqual(issue["progress_schema"], "pfe-progress/v1")
+        self.assertEqual(issue["progress_task_id"], "B06-F97-036-form-list")
+        self.assertEqual(issue["row_id"], "F97-036")
+        self.assertIn("progress_task_id: B06-F97-036-form-list", api.issues[-1]["description_html"])
+
     def test_live_backend_creates_project_when_project_id_is_missing(self):
         api = FakePlaneApi(projects=[])
         client = LivePlaneClient(

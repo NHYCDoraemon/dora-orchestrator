@@ -28,6 +28,18 @@ def task_spec(
 
 
 class TaskGraphTest(unittest.TestCase):
+    def test_task_spec_defaults_to_claude_agent(self):
+        task = TaskSpec(
+            external_id="S1.5-P1-01",
+            title="Task",
+            project_slug="dora-context",
+            cycle="S1.5",
+            module="context",
+            priority="P1",
+        )
+
+        self.assertEqual(task.agent_hint, "claude")
+
     def test_source_hash_is_stable(self):
         task = task_spec()
         spec = ProjectSpec(project_slug="dora-context", title="Dora Context", tasks=[task])

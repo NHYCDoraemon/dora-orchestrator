@@ -11,7 +11,7 @@ from .project_resolver import resolve_project_config
 class OrchestratorConfig:
     spec_path: Path
     target_repo: Path
-    executor: str = "codex"
+    executor: str = "claude"
     plane_backend: str = "memory"
     batch_path: Path | None = None
     project_slug: str = ""
@@ -22,7 +22,7 @@ class OrchestratorConfig:
 def load_config(environ: dict[str, str] | None = None) -> OrchestratorConfig:
     env = os.environ if environ is None else environ
     spec_path = Path(env.get("ORCHESTRATOR_SPEC", "examples/dora.orchestration.json"))
-    executor = env.get("ORCHESTRATOR_EXECUTOR", "codex")
+    executor = env.get("ORCHESTRATOR_EXECUTOR", "claude")
     plane_backend = env.get("ORCHESTRATOR_PLANE_BACKEND", "memory")
 
     batch_path = env.get("ORCHESTRATOR_BATCH_PATH")

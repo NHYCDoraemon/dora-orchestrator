@@ -5,6 +5,18 @@ from orchestrator.config import load_config
 
 
 class ConfigTest(unittest.TestCase):
+    def test_default_executor_is_claude_when_env_not_set(self):
+        config = load_config(
+            {
+                "ORCHESTRATOR_SPEC": "/tmp/spec.json",
+                "DORA_TARGET_REPO": "/tmp/repo",
+                "ORCHESTRATOR_PROJECT_SLUG": "dora",
+                "ORCHESTRATOR_PROJECT_TITLE": "Dora",
+            }
+        )
+
+        self.assertEqual(config.executor, "claude")
+
     def test_loads_env_paths_and_executor(self):
         config = load_config(
             {

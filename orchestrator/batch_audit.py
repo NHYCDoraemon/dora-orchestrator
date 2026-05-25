@@ -8,6 +8,7 @@ from pathlib import Path
 from .batch_loader import load_task_issue_batch
 from .batch_models import (
     FIXED_MODULE_TAXONOMY,
+    PROGRESS_METADATA_FIELDS,
     REQUIRED_ISSUE_PACKET_SECTIONS,
     AuditFinding,
     BatchAuditResult,
@@ -45,6 +46,7 @@ def audit_task_issue_batch(
     task_ids = {task.task_id for task in batch.tasks}
     for task in batch.tasks:
         _audit_task_metadata(batch, task, task_ids, findings)
+        _audit_progress_metadata(task, findings)
         _audit_issue_packet_sections(task, findings)
         _audit_task_language(task, findings)
         _audit_source_paths(batch, task, findings)
@@ -219,6 +221,31 @@ def _audit_source_paths(batch: TaskIssueBatch, task: TaskIssueDraft, findings: l
                         path=str(task.path),
                     )
                 )
+
+
+def _audit_progress_metadata(task: TaskIssueDraft, findings: list[AuditFinding]) -> None:
+    """If a task opts into dev-loop progress control, require all signals."""
+    opted_in = bool(task.metadata.get("progress_schema") or task.metadata.get("progress_task_id"))
+    if not opted_in:
+        return
+    for key in PROGRESS_METADATA_FIELDS:
+        if not str(task.metadata.get(key) or "").strip():
+            findings.append(
+                AuditFinding(
+                    code="progress_metadata",
+                    message=f"progress-controlled task missing required metadata: {key}",
+                    path=str(task.path),
+                )
+            )
+    schema = str(task.metadata.get("progress_schema") or "")
+    if schema and schema != "pfe-progress/v1":
+        findings.append(
+            AuditFinding(
+                code="progress_metadata",
+                message=f"unsupported progress_schema: {schema}",
+                path=str(task.path),
+            )
+        )
 
 
 def _resolve_source_path(batch: TaskIssueBatch, task: TaskIssueDraft, value: str) -> Path:

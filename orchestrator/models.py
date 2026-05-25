@@ -15,7 +15,7 @@ class TaskSpec:
     acceptance: list[str] = field(default_factory=list)
     verification_level: list[str] = field(default_factory=lambda: ["L1", "L2", "L3"])
     risk: str = "medium"
-    agent_hint: str = "codex"
+    agent_hint: str = "claude"
 
 
 @dataclass(frozen=True)

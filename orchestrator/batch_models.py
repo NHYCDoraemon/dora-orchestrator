@@ -43,6 +43,24 @@ FIXED_MODULE_TAXONOMY = {
     "governance",
 }
 
+PROGRESS_METADATA_FIELDS = [
+    "progress_schema",
+    "progress_task_id",
+    "row_id",
+    "source_scope",
+    "task_kind",
+    "route_path",
+    "backend_contract",
+    "frontend_surface",
+    "requirement_signal",
+    "development_work",
+    "data_lineage",
+    "acceptance_signal",
+    "verification_signal",
+    "ledger_update_rule",
+    "no_go_signal",
+]
+
 
 @dataclass(frozen=True)
 class MarkdownDocument:

@@ -43,7 +43,7 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(cfg.slug, "dora")
         self.assertEqual(cfg.title, "Dora")
         self.assertEqual(cfg.repo_root, Path("/tmp/repo"))
-        self.assertEqual(cfg.default_executor, "codex")
+        self.assertEqual(cfg.default_executor, "claude")
         self.assertEqual(cfg.schedule_cron, "*/2 * * * *")
         self.assertFalse(cfg.enable_push)
         self.assertFalse(cfg.enable_pr)
@@ -105,8 +105,7 @@ class FactoryDefinitionsTest(unittest.TestCase):
         if importlib.util.find_spec("dagster") is None:
             self.skipTest("dagster not installed")
 
-    def test_build_project_defs_emits_named_job_schedule_and_assets(self):
-        from dagster import DefaultScheduleStatus
+    def test_build_project_defs_emits_named_job_and_assets_without_disabled_schedule(self):
         from orchestrator.dagster_defs import ProjectConfig, build_project_defs
 
         defs = build_project_defs(
@@ -123,12 +122,7 @@ class FactoryDefinitionsTest(unittest.TestCase):
         schedule_names = {
             s.name for s in defs.get_repository_def().schedule_defs
         }
-        self.assertEqual(len(schedule_names), 1)
-        # Cron-derived label
-        for sn in schedule_names:
-            self.assertTrue(sn.startswith("example_every_"))
-        schedule_defs = defs.get_repository_def().schedule_defs
-        self.assertEqual(schedule_defs[0].default_status, DefaultScheduleStatus.STOPPED)
+        self.assertEqual(schedule_names, set())
 
         asset_keys = {
             ak.to_user_string()
@@ -154,6 +148,21 @@ class FactoryDefinitionsTest(unittest.TestCase):
         schedule_defs = defs.get_repository_def().schedule_defs
         self.assertEqual(len(schedule_defs), 1)
         self.assertEqual(schedule_defs[0].default_status, DefaultScheduleStatus.RUNNING)
+
+    def test_run_job_uses_event_log_only_logger(self):
+        from orchestrator.dagster_defs import ProjectConfig, build_project_defs
+
+        defs = build_project_defs(
+            ProjectConfig(
+                slug="quiet",
+                title="Quiet",
+                repo_root=Path("/tmp/quiet"),
+            )
+        )
+
+        job = defs.get_repository_def().get_job("quiet_run_ready_batch_task")
+
+        self.assertEqual(set(job.loggers.keys()), {"event_log_only"})
 
     def test_build_orchestrated_projects_defs_merges_multiple_projects(self):
         from orchestrator.dagster_defs import build_orchestrated_projects_defs

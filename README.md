@@ -246,7 +246,7 @@ PY
 |---|---|
 | `DORA_TARGET_REPO` | Path to the business repository being orchestrated. |
 | `ORCHESTRATOR_PLANE_BACKEND` | `memory` (default) / `local` / `live`. |
-| `ORCHESTRATOR_EXECUTOR` | `noop` (default) / `codex` / `claude`. |
+| `ORCHESTRATOR_EXECUTOR` | `claude` (default) / `codex` / `noop`. |
 | `ORCHESTRATOR_BATCH_PATH` | Batch directory (used by Dagster assets). |
 | `ORCHESTRATOR_PROJECT_SLUG`, `ORCHESTRATOR_PROJECT_TITLE` | Plane Project identity for batch submission. |
 | `ORCHESTRATOR_RUN_ID` | Run identifier for the Dagster `ready_task_run` asset. |

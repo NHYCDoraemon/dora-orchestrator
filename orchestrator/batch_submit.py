@@ -9,6 +9,7 @@ from .batch_hash import compute_batch_hash
 from .batch_loader import load_task_issue_batch
 from .batch_models import (
     FIXED_MODULE_TAXONOMY,
+    PROGRESS_METADATA_FIELDS,
     REQUIRED_ISSUE_PACKET_SECTIONS,
     SECTION_DISPLAY_TITLES,
     TaskIssueBatch,
@@ -80,6 +81,11 @@ def submit_task_issue_batch(
     for task in batch.tasks:
         risk = str(task.metadata.get("risk") or "medium")
         priority = task.priority or "P3"
+        progress_metadata = {
+            key: task.metadata.get(key)
+            for key in PROGRESS_METADATA_FIELDS
+            if task.metadata.get(key) is not None
+        }
         plane_client.upsert_issue(
             project_slug,
             task.task_id,
@@ -95,7 +101,7 @@ def submit_task_issue_batch(
                 "depends_on_legacy": _list_value(task.metadata.get("depends_on_legacy")),
                 "legacy_refs": _list_value(task.metadata.get("legacy_refs")),
                 "source_hash": _task_hash(task),
-                "agent_hint": str(task.metadata.get("agent_hint") or "codex"),
+                "agent_hint": str(task.metadata.get("agent_hint") or "claude"),
                 "risk": str(task.metadata.get("risk") or "medium"),
                 "acceptance": _parse_acceptance_bullets(task.sections.get("Acceptance", "")),
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
@@ -105,6 +111,7 @@ def submit_task_issue_batch(
                 "forbidden_skills": _list_value(task.metadata.get("forbidden_skills")),
                 "program_page_slug": f"program-{batch.program_id}",
                 "batch_page_slug": f"batch-{batch.batch_id}",
+                **progress_metadata,
             },
         )
         if hasattr(plane_client, "add_label"):

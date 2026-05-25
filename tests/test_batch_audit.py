@@ -62,3 +62,22 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "FAIL")
             self.assertTrue(any("file name" in finding.message for finding in result.findings))
+
+    def test_rejects_progress_task_missing_required_state_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            task = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            text = task.read_text(encoding="utf-8")
+            task.write_text(
+                text.replace(
+                    "priority: P1\n",
+                    "priority: P1\nprogress_schema: pfe-progress/v1\nprogress_task_id: B06-F97-036-form-list\n",
+                ),
+                encoding="utf-8",
+            )
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "progress_metadata" for finding in result.findings))

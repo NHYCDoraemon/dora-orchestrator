@@ -221,7 +221,7 @@ class WriteProjectRegistryTest(unittest.TestCase):
             self.assertEqual(data["slug"], "my-project")
             self.assertEqual(data["title"], "My Project")
             self.assertIn("repo_root", data)
-            self.assertEqual(data["default_executor"], "codex")
+            self.assertEqual(data["default_executor"], "claude")
 
     def test_registry_entry_is_valid_project_config(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -284,7 +284,7 @@ def write_project_registry(
         "plane_workspace_slug": "",
         "schedule_cron": "*/2 * * * *",
         "schedule_timezone": "Asia/Shanghai",
-        "default_executor": "codex",
+        "default_executor": "claude",
         "codex_home": "~/.codex",
         "max_runtime_seconds": 3600,
         "git_branch_prefix": "orchestrator",

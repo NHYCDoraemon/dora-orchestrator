@@ -10,6 +10,7 @@ The single job delegates all business logic to
 built by ``orchestrator.dagster_defs.ops.build_single_op``.
 """
 
+import logging
 from pathlib import Path
 
 from dagster import (
@@ -26,6 +27,7 @@ from dagster import (
     SkipReason,
     asset,
     job,
+    logger,
     schedule,
 )
 
@@ -41,6 +43,15 @@ _ACTIVE_RUN_STATUSES = (
     DagsterRunStatus.STARTING,
     DagsterRunStatus.STARTED,
 )
+
+
+@logger(description="Keep Dagster context logs in the event log without echoing to compute stderr.")
+def event_log_only_logger(init_context):
+    logger_name = f"orchestrator.event_log_only.{init_context.run_id or 'unknown'}"
+    logger_ = logging.getLoggerClass()(logger_name, level=logging.NOTSET)
+    logger_.addHandler(logging.NullHandler())
+    logger_.propagate = False
+    return logger_
 
 
 def build_project_defs(cfg: ProjectConfig) -> Definitions:
@@ -66,6 +77,7 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
             "dagster/concurrency_key": concurrency_key,
             f"{cfg.slug}/job_kind": "run_ready_batch_task",
         },
+        logger_defs={"event_log_only": event_log_only_logger},
     )
     def run_job():
         run_op.with_retry_policy(op_retry)()
@@ -125,9 +137,10 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
             },
         )
 
+    schedules = [run_schedule] if cfg.schedule_enabled else []
     base_defs = Definitions(
         jobs=[run_job],
-        schedules=[run_schedule],
+        schedules=schedules,
         assets=[
             _make_status_asset(cfg),
             _make_reset_lease_asset(cfg),

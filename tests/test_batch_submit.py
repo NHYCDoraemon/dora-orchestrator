@@ -41,6 +41,7 @@ class BatchSubmitTest(unittest.TestCase):
             self.assertIn("# CLI 上下文检查能力", task["body"])
             self.assertIn("## 任务概要", task["body"])
             self.assertNotIn("# Task Summary", task["body"])
+            self.assertEqual(task["agent_hint"], "claude")
 
     def test_submits_required_skills_to_task_issue(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +103,54 @@ class BatchSubmitTest(unittest.TestCase):
             task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
             self.assertEqual(task["suggested_skills"], ["browser:browser"])
             self.assertEqual(task["forbidden_skills"], ["dora-plane"])
+
+    def test_submits_progress_metadata_to_task_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo)
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_text = task_path.read_text(encoding="utf-8")
+            task_path.write_text(
+                task_text.replace(
+                    "priority: P1\n",
+                    (
+                        "priority: P1\n"
+                        "progress_schema: pfe-progress/v1\n"
+                        "progress_task_id: B06-F97-036-form-list\n"
+                        "row_id: F97-036\n"
+                        "source_scope: original-97\n"
+                        "task_kind: connect_or_contract\n"
+                        "route_path: /forms/list\n"
+                        "backend_contract: GET /api/v1/forms\n"
+                        "frontend_surface: src/pages/forms/list/FormListPage.tsx\n"
+                        "requirement_signal: 用户能在 /forms/list 看到真实表单模板列表。\n"
+                        "development_work: 接入 GET /api/v1/forms 并禁止 mock-only 假成功。\n"
+                        "data_lineage: GET /api/v1/forms -> src/api/forms.ts -> /forms/list -> ledger F97-036\n"
+                        "acceptance_signal: 真实接口响应驱动页面。\n"
+                        "verification_signal: L1 focused test; L2 build; L3 ledger; L4 browser; L5 summary\n"
+                        "ledger_update_rule: F97-036 只有证据同步后才允许变更状态。\n"
+                        "no_go_signal: 使用 fixture/mock/MSW 写成功即 NO-GO。\n"
+                    ),
+                ),
+                encoding="utf-8",
+            )
+            batch_dir = approve_batch(repo, batch_dir)
+            client = InMemoryPlaneClient()
+
+            submit_task_issue_batch(
+                batch_dir,
+                repo_root=repo,
+                project_slug="dora",
+                project_title="Dora",
+                plane_client=client,
+            )
+
+            task = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            self.assertEqual(task["progress_schema"], "pfe-progress/v1")
+            self.assertEqual(task["progress_task_id"], "B06-F97-036-form-list")
+            self.assertEqual(task["row_id"], "F97-036")
+            self.assertEqual(task["task_kind"], "connect_or_contract")
+            self.assertIn("GET /api/v1/forms", task["data_lineage"])
 
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:

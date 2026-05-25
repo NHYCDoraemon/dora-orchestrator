@@ -40,6 +40,42 @@ def _seed_batch_state(client: InMemoryPlaneClient) -> None:
     )
 
 
+def _seed_progress_task(client: InMemoryPlaneClient, *, summary: str = "") -> None:
+    client.upsert_project("process-frontend", "Process Frontend")
+    client.upsert_issue(
+        "process-frontend",
+        "PFE-P1FR-20260525C-T01",
+        {
+            "name": "F97-036 表单模板列表",
+            "body": "# Task Summary\n\n接入表单模板列表。\n",
+            "issue_type": "task",
+            "priority": "P1",
+            "depends_on": [],
+            "agent_hint": "codex",
+            "verification_level": ["L1", "L2", "L3"],
+            "verification_commands": ["true"],
+            "progress_schema": "pfe-progress/v1",
+            "progress_task_id": "B06-F97-036-form-list",
+            "row_id": "F97-036",
+            "source_scope": "original-97",
+            "task_kind": "connect_or_contract",
+            "batch_id": "B06",
+            "batch_name": "表单引擎",
+            "route_path": "/forms/list",
+            "backend_contract": "GET /api/v1/forms",
+            "frontend_surface": "src/pages/forms/list/FormListPage.tsx | src/api/forms.ts",
+            "requirement_signal": "用户能在 /forms/list 看到真实表单模板列表。",
+            "development_work": "接入 GET /api/v1/forms 并禁止 mock-only 假成功。",
+            "data_lineage": "GET /api/v1/forms -> src/api/forms.ts -> /forms/list -> ledger F97-036",
+            "acceptance_signal": "真实接口响应驱动页面；mock-only 不可作为通过。",
+            "verification_signal": "L1 focused test; L2 build; L3 ledger; L4 browser; L5 summary",
+            "ledger_update_rule": "F97-036 只有证据同步后才允许变更状态。",
+            "no_go_signal": "使用 fixture/mock/MSW 写成功即 NO-GO。",
+            "test_summary": summary,
+        },
+    )
+
+
 class RunReadyBatchTaskTest(unittest.TestCase):
     def test_executor_prompt_includes_required_skills_when_declared(self):
         prompt = _render_executor_prompt(
@@ -107,6 +143,27 @@ class RunReadyBatchTaskTest(unittest.TestCase):
 
         self.assertNotIn("# Suggested Skills", prompt)
         self.assertNotIn("# Forbidden Skills", prompt)
+
+    def test_executor_prompt_includes_progress_control_contract(self):
+        prompt = _render_executor_prompt(
+            {
+                "external_id": "PFE-P1FR-20260525C-T01",
+                "key": "PFE-1",
+                "body": "# 表单模板列表\n",
+                "progress_schema": "pfe-progress/v1",
+                "progress_task_id": "B06-F97-036-form-list",
+                "row_id": "F97-036",
+                "acceptance_signal": "真实接口响应驱动页面。",
+                "verification_signal": "L1-L5 全绿。",
+            },
+            batch_id="20260525C",
+            branch="orchestrator/codex/PFE-1",
+            worktree_path=Path("/tmp/worktree"),
+        )
+
+        self.assertIn("# Progress Control Contract", prompt)
+        self.assertIn("RESULT: B06-F97-036-form-list <done|partial|needs_input>", prompt)
+        self.assertIn("acceptance_signal: 真实接口响应驱动页面。", prompt)
 
     def test_formats_codex_agent_messages(self):
         message = "I will inspect the repository first.\nThen edit."
@@ -296,6 +353,99 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertEqual(result["outcome"], "no_ready")
         self.assertEqual(result["run_id"], "run-3")
         self.assertEqual(result["loop_count"], 1)
+
+
+class RunReadyBatchTaskProgressControlTest(unittest.TestCase):
+    def test_strict_progress_task_without_result_signature_stays_partial(self):
+        class _FakeExecutor:
+            def run(self, context):
+                return ExecutorResult("agent_done", "完成了页面开发，但没有结果签名。", [])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            _seed_progress_task(client)
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                executor="codex",
+                project_slug="process-frontend",
+                project_title="Process Frontend",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="progress-missing")
+
+        task_result = result["runs"][0]
+        self.assertEqual(task_result["outcome"], "agent_unverified")
+        self.assertEqual(task_result["state"], "Partial")
+        self.assertIn("missing", task_result["result_signal"]["error"])
+        self.assertEqual(
+            client.issues[("process-frontend", "PFE-P1FR-20260525C-T01")]["state"],
+            "Partial",
+        )
+
+    def test_strict_progress_task_result_partial_stays_partial(self):
+        class _FakeExecutor:
+            def run(self, context):
+                return ExecutorResult(
+                    "agent_done",
+                    "有进展但仍有 mock-only。\nRESULT: B06-F97-036-form-list partial — mock-only 未清理",
+                    [],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            _seed_progress_task(client)
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                executor="codex",
+                project_slug="process-frontend",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="progress-partial")
+
+        task_result = result["runs"][0]
+        self.assertEqual(task_result["outcome"], "agent_partial")
+        self.assertEqual(task_result["state"], "Partial")
+        self.assertEqual(task_result["result_signal"]["status"], "partial")
+        self.assertIn("mock-only", task_result["result_signal"]["reason"])
+
+    def test_strict_progress_task_done_writes_progress_projection(self):
+        class _FakeExecutor:
+            def run(self, context):
+                return ExecutorResult(
+                    "agent_done",
+                    "表单模板列表已接入。\nRESULT: B06-F97-036-form-list done — L1-L5 全绿",
+                    [],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            client = InMemoryPlaneClient()
+            _seed_progress_task(client)
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="codex",
+                project_slug="process-frontend",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_FakeExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="progress-done")
+
+            progress_path = repo / ".dora" / "progress" / "process-frontend-progress.json"
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+
+        task_result = result["runs"][0]
+        self.assertEqual(task_result["outcome"], "agent_done")
+        self.assertEqual(task_result["state"], "Done")
+        self.assertEqual(progress["schema_version"], "pfe-progress/v1")
+        self.assertEqual(progress["last_result"]["progress_task_id"], "B06-F97-036-form-list")
+        self.assertEqual(progress["last_result"]["result"], "done")
+        self.assertEqual(progress["tasks"][0]["row_id"], "F97-036")
+        self.assertEqual(progress["tasks"][0]["state"], "done")
 
 
 class RunReadyBatchTaskHonorsFrontmatterTest(unittest.TestCase):

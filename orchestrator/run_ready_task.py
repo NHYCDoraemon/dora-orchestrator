@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
+from .batch_models import PROGRESS_METADATA_FIELDS
 from .config import OrchestratorConfig
 from .executor_protocol import TaskRunContext
 from .executors import get_executor
@@ -303,9 +305,20 @@ def _execute_one_task(
             on_line=_on_executor_line,
         )
         result = executor.run(context)
+        artifacts.summary_path.write_text((result.summary.rstrip() + "\n") if result.summary else "", encoding="utf-8")
         if on_progress:
             on_progress("executor_done", {"external_id": external_id, "outcome": result.outcome,
                           "touched_files": len(result.touched_files)})
+        strict_progress = _is_progress_controlled(claimed)
+        result_signal = (
+            _parse_progress_result_signal(result.summary, _progress_value(claimed, "progress_task_id"))
+            if strict_progress
+            else None
+        )
+        if result_signal is not None:
+            _emit(plane_client, config.project_slug, external_id,
+                  "dora-loop:result",
+                  json.dumps(result_signal, ensure_ascii=False, sort_keys=True))
         _emit(plane_client, config.project_slug, external_id,
               f"dora-loop:tool:{executor_name}",
               f"outcome={result.outcome}\nsummary={result.summary}\n"
@@ -315,13 +328,16 @@ def _execute_one_task(
             list(claimed.get("verification_commands") or []),
             repo_root,
         )
+        artifacts.verify_path.write_text(_format_verification(verification) + "\n", encoding="utf-8")
         _emit(plane_client, config.project_slug, external_id, "dora-loop:verify",
               _format_verification(verification))
         if on_progress:
             on_progress("verification", {"external_id": external_id, "pass": verification["pass"],
                          "skipped": verification.get("skipped", False)})
 
-        if result.outcome == "agent_done" and not verification["pass"]:
+        if strict_progress and result_signal is not None:
+            outcome = _progress_controlled_outcome(result.outcome, bool(verification["pass"]), result_signal)
+        elif result.outcome == "agent_done" and not verification["pass"]:
             outcome = "agent_unverified"
         else:
             outcome = result.outcome
@@ -329,6 +345,8 @@ def _execute_one_task(
         retry_count = _read_retry_count(claimed)
         if outcome == "agent_done":
             terminal_state = "Done"
+        elif strict_progress and result_signal and result_signal.get("status") == "needs_input":
+            terminal_state = "Needs Input"
         elif retry_count >= 3:
             outcome = "agent_unverified"
             terminal_state = "Needs Input"
@@ -349,11 +367,27 @@ def _execute_one_task(
                 "outcome": outcome,
                 "summary": result.summary,
                 "event_path": str(artifacts.event_path),
+                "summary_path": str(artifacts.summary_path),
+                "verify_path": str(artifacts.verify_path),
                 "verification": verification,
+                "result_signal": result_signal,
             },
         )
         plane_client.release_issue(config.project_slug, external_id, terminal_state)
         _released = True
+        if strict_progress and result_signal is not None:
+            _write_progress_projection(
+                repo_root,
+                config.project_slug,
+                plane_client,
+                active_external_id=external_id,
+                run_id=run_id,
+                outcome=outcome,
+                terminal_state=terminal_state,
+                result_signal=result_signal,
+                artifacts=artifacts,
+                verification=verification,
+            )
         if on_progress:
             on_progress("released", {"external_id": external_id, "state": terminal_state, "outcome": outcome})
     except BaseException:
@@ -423,6 +457,23 @@ def _execute_one_task(
                          "pr_url": delivery_result.pr_url,
                          "merged": delivery_result.merged})
 
+        # --- worktree cleanup -------------------------------------------
+        if delivery.enable_commit and batch_id:
+            from .delivery import cleanup_worktree
+
+            wt_path = delivery.worktree_root / delivery.project_slug / batch_id
+            removed, reason = cleanup_worktree(
+                delivery.repo_root, wt_path, branch,
+            )
+            if removed:
+                _emit(plane_client, config.project_slug, external_id,
+                      "dora-loop:worktree:removed",
+                      f"cleaned up {wt_path}")
+            else:
+                _emit(plane_client, config.project_slug, external_id,
+                      "dora-loop:worktree:kept",
+                      f"kept {wt_path} (reason={reason})")
+
     batch_id = _extract_batch_id(external_id)
     if batch_id and hasattr(plane_client, "update_page"):
         try:
@@ -438,7 +489,10 @@ def _execute_one_task(
         "issue": claimed["key"],
         "external_id": external_id,
         "event_path": str(artifacts.event_path),
+        "summary_path": str(artifacts.summary_path),
+        "verify_path": str(artifacts.verify_path),
         "verification": verification,
+        "result_signal": result_signal,
         "touched_files": [str(path) for path in result.touched_files],
     }
     if delivery_result is not None:
@@ -779,6 +833,7 @@ def _render_executor_prompt(
     suggested_skills_section = _render_suggested_skills_section(suggested_skills)
     forbidden_skills = _skills_for_issue(issue, "forbidden_skills")
     forbidden_skills_section = _render_forbidden_skills_section(forbidden_skills)
+    progress_contract_section = _render_progress_contract_section(issue)
     header = (
         "You are running unattended inside the dora orchestrator. There is no "
         "human in the loop on this run; act with full decision authority.\n\n"
@@ -790,6 +845,7 @@ def _render_executor_prompt(
         f"{required_skills_section}"
         f"{suggested_skills_section}"
         f"{forbidden_skills_section}"
+        f"{progress_contract_section}"
         "# Operating rules\n"
         "1. **Decide and act.** The Issue Packet below is the contract. Make "
         "the most reasonable assumption it supports and proceed; do not ask "
@@ -874,6 +930,33 @@ def _render_forbidden_skills_section(forbidden_skills: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _render_progress_contract_section(issue: dict) -> str:
+    if not _is_progress_controlled(issue):
+        return ""
+    progress_task_id = _progress_value(issue, "progress_task_id") or "<progress_task_id>"
+    lines = [
+        "# Progress Control Contract",
+        "",
+        "This issue is controlled by the frontend PROGRESS ledger. The orchestrator will not release Done unless the executor summary contains a valid final RESULT line and declared verification passes.",
+        "",
+        f"Final line MUST use exactly this form: `RESULT: {progress_task_id} <done|partial|needs_input> — <brief reason>`",
+        "",
+        "Required state signals:",
+    ]
+    for key in PROGRESS_METADATA_FIELDS:
+        value = _progress_value(issue, key)
+        if value:
+            lines.append(f"- {key}: {value}")
+    lines.extend(
+        [
+            "",
+            "Use `done` only when the real UI/API/ledger acceptance signal is satisfied. Use `partial` for incomplete implementation or missing evidence. Use `needs_input` only when a concrete external blocker prevents progress.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _required_skills_for_issue(issue: dict) -> list[str]:
     return _skills_for_issue(issue, "required_skills")
 
@@ -898,6 +981,222 @@ def _list_prompt_values(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _is_progress_controlled(issue: dict) -> bool:
+    schema = _progress_value(issue, "progress_schema")
+    task_id = _progress_value(issue, "progress_task_id")
+    return bool(schema == "pfe-progress/v1" or task_id)
+
+
+def _progress_value(issue: dict, key: str) -> str:
+    value = issue.get(key)
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    description = str(issue.get("description_html") or "")
+    if not description:
+        return ""
+    extracted = _extract_frontmatter_value(description, key)
+    return str(extracted or "").strip()
+
+
+def _parse_progress_result_signal(summary: str, expected_task_id: str | None) -> dict[str, str]:
+    expected = str(expected_task_id or "").strip()
+    matches = list(
+        re.finditer(
+            r"^\s*RESULT:\s*(?P<task>\S+)\s+"
+            r"(?P<status>done|partial|needs_input)\s*"
+            r"(?:[—-]\s*(?P<reason>.*))?\s*$",
+            summary or "",
+            re.MULTILINE,
+        )
+    )
+    if not matches:
+        return {
+            "status": "missing",
+            "error": f"missing RESULT signature for {expected or '<unknown>'}",
+        }
+    match = matches[-1]
+    task_id = match.group("task").strip()
+    status = match.group("status").strip()
+    reason = (match.group("reason") or "").strip()
+    signal = {"status": status, "task_id": task_id, "reason": reason}
+    if expected and task_id != expected:
+        signal["status"] = "invalid"
+        signal["error"] = f"RESULT task mismatch: expected {expected} got {task_id}"
+    return signal
+
+
+def _progress_controlled_outcome(raw_outcome: str, verification_pass: bool, result_signal: dict[str, str]) -> str:
+    status = result_signal.get("status")
+    if status in {"missing", "invalid"}:
+        return "agent_unverified"
+    if status == "partial":
+        return "agent_partial"
+    if status == "needs_input":
+        return "agent_needs_input"
+    if status == "done":
+        if raw_outcome == "agent_done" and verification_pass:
+            return "agent_done"
+        if raw_outcome == "agent_done":
+            return "agent_unverified"
+        return raw_outcome
+    return "agent_unverified"
+
+
+def _write_progress_projection(
+    repo_root: Path,
+    project_slug: str,
+    plane_client,
+    *,
+    active_external_id: str,
+    run_id: str,
+    outcome: str,
+    terminal_state: str,
+    result_signal: dict[str, str],
+    artifacts,
+    verification: dict[str, object],
+) -> Path:
+    tasks = _collect_progress_tasks(plane_client, project_slug)
+    progress_tasks = [_progress_task_record(issue, active_external_id, run_id) for issue in tasks]
+    progress_tasks = [task for task in progress_tasks if task.get("progress_task_id")]
+    batches = _progress_batches(progress_tasks)
+    progress_dir = repo_root / ".dora" / "progress"
+    progress_dir.mkdir(parents=True, exist_ok=True)
+    path = progress_dir / f"{project_slug}-progress.json"
+    last_result_status = result_signal.get("status") or "failed"
+    if last_result_status not in {"done", "partial", "needs_input"}:
+        last_result_status = "failed"
+    active_record = next(
+        (task for task in progress_tasks if task.get("external_id") == active_external_id),
+        {},
+    )
+    projection = {
+        "schema_version": "pfe-progress/v1",
+        "project_slug": project_slug,
+        "phase": "phase-one-frontend",
+        "state": _aggregate_progress_state(progress_tasks, terminal_state),
+        "active_task": None,
+        "active_run_id": None,
+        "halt_reason": result_signal.get("reason") if last_result_status == "needs_input" else None,
+        "last_result": {
+            "progress_task_id": result_signal.get("task_id") or str(active_record.get("progress_task_id") or ""),
+            "run_id": run_id,
+            "result": last_result_status,
+            "outcome": outcome,
+            "terminal_state": terminal_state,
+            "reason": result_signal.get("reason") or result_signal.get("error") or "",
+            "summary_path": str(artifacts.summary_path),
+            "verify_path": str(artifacts.verify_path),
+            "event_path": str(artifacts.event_path),
+            "verification_pass": bool(verification.get("pass")),
+        },
+        "summary": _progress_summary(progress_tasks),
+        "batches": batches,
+        "tasks": progress_tasks,
+    }
+    path.write_text(json.dumps(projection, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _collect_progress_tasks(plane_client, project_slug: str) -> list[dict[str, Any]]:
+    if hasattr(plane_client, "query_issues"):
+        try:
+            return list(plane_client.query_issues(project_slug, include_root_epic=False))
+        except (RuntimeError, KeyError, TypeError, ValueError):
+            pass
+    if hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
+        return [
+            issue
+            for (slug, _eid), issue in plane_client.issues.items()
+            if slug == project_slug and issue.get("issue_type") != "root_epic"
+        ]
+    return []
+
+
+def _progress_task_record(issue: dict[str, Any], active_external_id: str, run_id: str) -> dict[str, Any]:
+    progress_task_id = _progress_value(issue, "progress_task_id")
+    if not progress_task_id:
+        return {}
+    external_id = str(issue.get("external_id") or "")
+    batch_id = _progress_value(issue, "batch_id") or _batch_id_from_progress_task_id(progress_task_id) or _extract_batch_id(external_id)
+    record: dict[str, Any] = {
+        "external_id": external_id,
+        "progress_task_id": progress_task_id,
+        "row_id": _progress_value(issue, "row_id"),
+        "batch_id": batch_id,
+        "state": _progress_state(str(issue.get("state") or "")),
+    }
+    for key in PROGRESS_METADATA_FIELDS:
+        if key in {"progress_schema", "progress_task_id", "row_id"}:
+            continue
+        value = _progress_value(issue, key)
+        if value:
+            record[key] = value
+    batch_name = _progress_value(issue, "batch_name")
+    if batch_name:
+        record["batch_name"] = batch_name
+    if external_id == active_external_id:
+        record["latest_run_id"] = run_id
+    return record
+
+
+def _progress_batches(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        grouped.setdefault(str(task.get("batch_id") or ""), []).append(task)
+    batches = []
+    for batch_id, rows in sorted(grouped.items()):
+        batches.append(
+            {
+                "batch_id": batch_id,
+                "state": _aggregate_progress_state(rows, ""),
+                "summary": _progress_summary(rows),
+            }
+        )
+    return batches
+
+
+def _progress_summary(tasks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {"total": len(tasks)}
+    for task in tasks:
+        state = str(task.get("state") or "pending")
+        counts[state] = counts.get(state, 0) + 1
+    return counts
+
+
+def _aggregate_progress_state(tasks: list[dict[str, Any]], terminal_state: str) -> str:
+    states = {str(task.get("state") or "pending") for task in tasks}
+    if "needs_input" in states or terminal_state == "Needs Input":
+        return "needs_input"
+    if "partial" in states or terminal_state == "Partial":
+        return "partial"
+    if "in_progress" in states:
+        return "executing"
+    if tasks and states <= {"done", "cancelled"}:
+        return "done"
+    if "done" in states:
+        return "partial"
+    return "idle"
+
+
+def _progress_state(plane_state: str) -> str:
+    return {
+        "Done": "done",
+        "Cancelled": "cancelled",
+        "Partial": "partial",
+        "Needs Input": "needs_input",
+        "In Progress": "in_progress",
+        "Todo": "pending",
+        "Backlog": "pending",
+        "Blocked": "pending",
+    }.get(plane_state, "pending")
+
+
+def _batch_id_from_progress_task_id(progress_task_id: str) -> str:
+    if "-" not in progress_task_id:
+        return ""
+    return progress_task_id.split("-", 1)[0]
 
 
 MAX_RETRIES = 3

@@ -11,6 +11,9 @@ CLI invocations typically supply no DeliveryConfig (no git side-effects).
 Dagster-driven runs supply a DeliveryConfig with all steps enabled.
 """
 
+import subprocess
+import time  # noqa: F811
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -146,8 +149,6 @@ def run_delivery(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-import subprocess
-import time  # noqa: E402
 
 
 def _git(cwd: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -432,6 +433,37 @@ def _merge_to_base(
     if not ok:
         return False, "update_ref_after_merge_failed"
     return True, "3-way"
+
+
+def cleanup_worktree(
+    repo_root: Path,
+    worktree_path: Path,
+    branch: str,
+) -> tuple[bool, str]:
+    """Remove a worktree after task completion.
+
+    Called after run_delivery to prevent worktree accumulation. Keeps the
+    worktree only when there are uncommitted changes worth reviewing.
+
+    Returns ``(removed, reason)``.
+    """
+    if not worktree_path.exists():
+        return False, "already_gone"
+
+    status = _git(worktree_path, "status", "--porcelain")
+    if status.stdout.strip():
+        return False, "dirty"
+
+    result = subprocess.run(
+        ["git", "worktree", "remove", "--force", str(worktree_path)],
+        cwd=str(repo_root),
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return False, f"remove_failed: {result.stderr.strip()[:200]}"
+
+    _git(repo_root, "worktree", "prune")
+    return True, "removed"
 
 
 def _try_update_ref(

@@ -7,5 +7,4 @@ from pathlib import Path
 @dataclass(frozen=True)
 class RepoConfig:
     root: Path
-    default_executor: str = "codex"
-
+    default_executor: str = "claude"

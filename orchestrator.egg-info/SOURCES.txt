@@ -17,6 +17,7 @@ orchestrator/delivery.py
 orchestrator/executor_protocol.py
 orchestrator/git_delivery.py
 orchestrator/in_memory_plane.py
+orchestrator/issue_order.py
 orchestrator/local_artifacts.py
 orchestrator/local_plane.py
 orchestrator/models.py
@@ -65,6 +66,7 @@ tests/test_bookstack_live.py
 tests/test_config.py
 tests/test_dagster_definitions.py
 tests/test_dagster_factory.py
+tests/test_dagster_ops.py
 tests/test_delivery.py
 tests/test_executor_noop.py
 tests/test_git_delivery.py
