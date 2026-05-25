@@ -51,7 +51,7 @@ class BatchLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with self.assertRaisesRegex(ValueError, r"unsupported nested YAML.*line"):
+            with self.assertRaisesRegex(ValueError, r"unsupported nested YAML.*line 10: nested:"):
                 load_task_issue_batch(batch_dir, repo_root=repo)
 
 

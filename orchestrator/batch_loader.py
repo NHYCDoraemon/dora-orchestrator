@@ -71,14 +71,14 @@ def _parse_frontmatter(text: str, path: Path) -> tuple[dict[str, object], str]:
         end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
     except StopIteration as exc:
         raise ValueError(f"unterminated YAML frontmatter: {path}") from exc
-    metadata = _parse_simple_yaml(lines[1:end], path)
+    metadata = _parse_simple_yaml(lines[1:end], path, start_line=2)
     body = "\n".join(lines[end + 1 :]).strip() + "\n"
     return metadata, body
 
 
-def _parse_simple_yaml(lines: list[str], path: Path) -> dict[str, object]:
+def _parse_simple_yaml(lines: list[str], path: Path, *, start_line: int = 1) -> dict[str, object]:
     normalized = [
-        (index + 1, len(raw) - len(raw.lstrip(" ")), raw.strip())
+        (start_line + index, len(raw) - len(raw.lstrip(" ")), raw.strip())
         for index, raw in enumerate(lines)
         if raw.strip()
     ]
