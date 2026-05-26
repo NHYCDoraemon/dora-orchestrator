@@ -286,7 +286,10 @@ source_docs:
 source_summaries:
   - docs/summaries/S1.5-P3-05.md
 source_commits: []
-{task_row_frontmatter}---
+{task_row_frontmatter}acceptance_checks:
+  - kind: shell
+    cmd: "python3 -c \"print('ok')\""
+---
 
 # 任务概要
 
