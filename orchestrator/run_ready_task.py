@@ -22,7 +22,7 @@ from .spec_loader import load_project_spec
 from .acceptance import run_acceptance_checks
 from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
 from .source_context import SOURCE_DOC_KEYS
-from .source_evidence import evaluate_source_evidence_from_event_path
+from .source_evidence import evaluate_source_evidence_from_event_path, source_evidence_blocks
 from .task_graph import build_task_graph
 
 ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
@@ -426,7 +426,11 @@ def _execute_one_task(
         if on_progress:
             on_progress("source_evidence", {"external_id": external_id, "pass": source_evidence.ok})
 
-        if not source_evidence.ok:
+        if source_evidence_blocks(
+            source_evidence,
+            agent_outcome=result.outcome,
+            verification_pass=bool(verification["pass"]),
+        ):
             outcome = "source_evidence_missing"
         elif strict_progress and result_signal is not None:
             outcome = _progress_controlled_outcome(result.outcome, bool(verification["pass"]), result_signal)
@@ -460,6 +464,17 @@ def _execute_one_task(
             terminal_state = "Partial"
             retry_count += 1
             _write_retry_count(plane_client, config.project_slug, external_id, retry_count)
+
+        if not source_evidence.ok and outcome != "source_evidence_missing":
+            if hasattr(plane_client, "add_label"):
+                plane_client.add_label(config.project_slug, external_id, "dora:source-evidence-advisory")
+            _emit(
+                plane_client,
+                config.project_slug,
+                external_id,
+                "dora-loop:source-evidence",
+                "advisory (non-blocking): " + source_evidence.message,
+            )
 
         if outcome != "agent_done" and hasattr(plane_client, "add_label"):
             label = _classify_label(outcome, terminal_state)

@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator.source_evidence import evaluate_source_evidence, evaluate_source_evidence_from_event_path
+from orchestrator.source_evidence import (
+    SourceEvidenceResult,
+    evaluate_source_evidence,
+    evaluate_source_evidence_from_event_path,
+    source_evidence_blocks,
+)
 
 
 class SourceEvidenceTest(unittest.TestCase):
@@ -1526,3 +1531,42 @@ class SourceEvidenceTest(unittest.TestCase):
             result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle])
 
             self.assertIs(result.ok, True)
+
+
+class SourceEvidenceBlocksTest(unittest.TestCase):
+    """A completed, verified run that read the source bundle should not be
+    blocked as Needs Input just because it skipped reading every individual
+    declared doc. A run that did NOT read the bundle (e.g. a noop/lazy
+    executor) must still be blocked."""
+
+    def _failing_result(self, *, bundle_observed: bool) -> SourceEvidenceResult:
+        bundle = Path("/wt/.dora/source-bundles/B/T01/source-bundle.md")
+        doc = Path("/wt/docs/audit/gap.md")
+        observed = (bundle,) if bundle_observed else ()
+        return SourceEvidenceResult(
+            ok=False,
+            required_paths=(bundle, doc),
+            observed_paths=observed,
+            missing_paths=(doc,) if bundle_observed else (bundle, doc),
+            message="missing",
+        )
+
+    def test_ok_result_never_blocks(self):
+        ok = SourceEvidenceResult(ok=True, required_paths=(), observed_paths=(), missing_paths=(), message="")
+        self.assertFalse(source_evidence_blocks(ok, agent_outcome="agent_done", verification_pass=True))
+
+    def test_done_and_verified_with_bundle_read_is_advisory(self):
+        res = self._failing_result(bundle_observed=True)
+        self.assertFalse(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=True))
+
+    def test_bundle_unread_still_blocks_even_if_verified(self):
+        res = self._failing_result(bundle_observed=False)
+        self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=True))
+
+    def test_not_agent_done_still_blocks(self):
+        res = self._failing_result(bundle_observed=True)
+        self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_unverified", verification_pass=True))
+
+    def test_verification_failed_still_blocks(self):
+        res = self._failing_result(bundle_observed=True)
+        self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=False))
