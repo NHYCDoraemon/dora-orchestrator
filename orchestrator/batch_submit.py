@@ -116,6 +116,7 @@ def submit_task_issue_batch(
                 "acceptance": _parse_acceptance_bullets(task.sections.get("Acceptance", "")),
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
                 "verification_commands": _list_value(task.metadata.get("verification_commands")),
+                "acceptance_checks": _acceptance_checks_value(task.metadata.get("acceptance_checks")),
                 "execution_packet_version": preflight_issue["execution_packet_version"],
                 "execution_packet_hash": preflight_issue["execution_packet_hash"],
                 "source_docs": preflight_issue["source_docs"],
@@ -235,6 +236,12 @@ def _task_hash(task: TaskIssueDraft) -> str:
     digest.update(task.body.encode("utf-8"))
     digest.update(str(task.metadata).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _acceptance_checks_value(value: object) -> list[dict]:
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []
 
 
 def _list_value(value: object) -> list[str]:
