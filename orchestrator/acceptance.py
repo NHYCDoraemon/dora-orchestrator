@@ -25,6 +25,8 @@ _SHELL_TIMEOUT_SECONDS = 120
 
 def is_trivial_shell(cmd: str) -> bool:
     c = str(cmd).strip()
+    if not c:
+        return True
     if c in {"true", ":", "test"}:
         return True
     if re.match(r"^test\s+-[sfe]\b", c):
@@ -68,6 +70,8 @@ def validate_check_structure(checks: list[dict]) -> list[str]:
                 errors.append(f"check #{index} ({kind}): missing required param: {param}")
         if kind in {"file_min_bytes", "min_matches"} and "min" in check and not isinstance(check["min"], int):
             errors.append(f"check #{index} ({kind}): min must be an integer")
+        if kind in {"file_min_bytes", "min_matches"} and "min" in check and isinstance(check["min"], int) and check["min"] < 1:
+            errors.append(f"check #{index} ({kind}): min must be a positive integer")
         if kind == "min_matches" and "pattern" in check:
             try:
                 re.compile(str(check["pattern"]))
@@ -75,6 +79,10 @@ def validate_check_structure(checks: list[dict]) -> list[str]:
                 errors.append(f"check #{index} (min_matches): illegal regex: {exc}")
         if kind == "contains_sections" and "headings" in check and not isinstance(check["headings"], list):
             errors.append(f"check #{index} (contains_sections): headings must be a list")
+        if kind == "contains_sections" and "headings" in check and isinstance(check["headings"], list) and len(check["headings"]) == 0:
+            errors.append(f"check #{index} (contains_sections): headings must not be empty")
+        if kind == "shell" and "cmd" in check and str(check["cmd"]).strip() == "":
+            errors.append(f"check #{index} (shell): cmd must not be empty")
     return errors
 
 

@@ -24,6 +24,9 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(classify_check({"kind": "shell", "cmd": "go test ./..."}), "behavioral")
         self.assertEqual(classify_check({"kind": "shell", "cmd": "test -s file.md"}), "existence")
 
+    def test_shell_empty_cmd_is_existence(self):
+        self.assertEqual(classify_check({"kind": "shell", "cmd": ""}), "existence")
+
     def test_unknown_kind_is_weak(self):
         self.assertEqual(classify_check({"kind": "nonsense"}), "existence")
 
@@ -32,6 +35,10 @@ class TrivialShellTest(unittest.TestCase):
     def test_trivial(self):
         for cmd in ["test -s x", "test -f x", "test -e x", "test", "true", ":", "ls", "cat x", "echo hi"]:
             self.assertTrue(is_trivial_shell(cmd), cmd)
+
+    def test_trivial_empty_and_whitespace(self):
+        self.assertTrue(is_trivial_shell(""))
+        self.assertTrue(is_trivial_shell("   "))
 
     def test_non_trivial(self):
         for cmd in ["go test ./...", "grep -E '^\\| .+ \\|' file", "pytest -q", "go build ./..."]:
@@ -75,6 +82,34 @@ class ValidateStructureTest(unittest.TestCase):
             {"kind": "contains_sections", "path": "x", "headings": ["## A."]},
             {"kind": "shell", "cmd": "go test ./..."},
         ]), [])
+
+    def test_valid_multi(self):
+        self.assertEqual(validate_check_structure([
+            {"kind": "contains_sections", "path": "x", "headings": ["## A."]},
+            {"kind": "min_matches", "path": "x", "pattern": "a", "min": 1},
+        ]), [])
+
+    def test_shell_empty_cmd_error(self):
+        errs = validate_check_structure([{"kind": "shell", "cmd": "  "}])
+        self.assertTrue(any("empty" in e for e in errs), errs)
+
+    def test_contains_sections_empty_headings_error(self):
+        errs = validate_check_structure([{"kind": "contains_sections", "path": "x", "headings": []}])
+        self.assertTrue(any("empty" in e for e in errs), errs)
+
+    def test_min_matches_non_positive_min_error(self):
+        errs = validate_check_structure([{"kind": "min_matches", "path": "x", "pattern": "a", "min": 0}])
+        self.assertTrue(any("positive" in e for e in errs), errs)
+
+    def test_file_min_bytes_non_positive_min_error(self):
+        errs = validate_check_structure([{"kind": "file_min_bytes", "path": "x", "min": 0}])
+        self.assertTrue(any("positive" in e for e in errs), errs)
+
+    def test_min_non_int_does_not_emit_positive_error(self):
+        # non-int "min" must only produce the "integer" error, not also "positive"
+        errs = validate_check_structure([{"kind": "file_min_bytes", "path": "x", "min": "ten"}])
+        self.assertTrue(any("integer" in e for e in errs), errs)
+        self.assertFalse(any("positive" in e for e in errs), errs)
 
 
 class RunnerTest(unittest.TestCase):
