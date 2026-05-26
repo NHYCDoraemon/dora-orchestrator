@@ -282,10 +282,15 @@ def _stage_and_commit(
     ]
     if not verification_pass:
         for r in verification_results:
-            msg_lines.append(
-                f"  - rc={r['returncode']} "
-                f"{'ok' if r['ok'] else 'FAIL'}: {r['command']}"
-            )
+            # verification_results come in two shapes: verification_commands ->
+            # {command, ok, returncode}; acceptance_checks -> {kind, ok, detail}.
+            status = "ok" if r.get("ok") else "FAIL"
+            label = r.get("command") or r.get("kind") or "check"
+            rc = r.get("returncode")
+            detail = "" if rc is None else f"rc={rc} "
+            if not detail and r.get("detail"):
+                detail = f"{r['detail']} "
+            msg_lines.append(f"  - {detail}{status}: {label}")
     msg_lines.extend([
         "",
         f"dagster-run-id: {run_id}",
