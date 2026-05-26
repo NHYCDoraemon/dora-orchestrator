@@ -1539,15 +1539,15 @@ class SourceEvidenceBlocksTest(unittest.TestCase):
     declared doc. A run that did NOT read the bundle (e.g. a noop/lazy
     executor) must still be blocked."""
 
-    def _failing_result(self, *, bundle_observed: bool) -> SourceEvidenceResult:
+    def _failing_result(self, *, read_something: bool) -> SourceEvidenceResult:
         bundle = Path("/wt/.dora/source-bundles/B/T01/source-bundle.md")
         doc = Path("/wt/docs/audit/gap.md")
-        observed = (bundle,) if bundle_observed else ()
+        observed = (bundle,) if read_something else ()
         return SourceEvidenceResult(
             ok=False,
             required_paths=(bundle, doc),
             observed_paths=observed,
-            missing_paths=(doc,) if bundle_observed else (bundle, doc),
+            missing_paths=(doc,) if read_something else (bundle, doc),
             message="missing",
         )
 
@@ -1555,18 +1555,34 @@ class SourceEvidenceBlocksTest(unittest.TestCase):
         ok = SourceEvidenceResult(ok=True, required_paths=(), observed_paths=(), missing_paths=(), message="")
         self.assertFalse(source_evidence_blocks(ok, agent_outcome="agent_done", verification_pass=True))
 
-    def test_done_and_verified_with_bundle_read_is_advisory(self):
-        res = self._failing_result(bundle_observed=True)
+    def test_done_and_verified_having_read_a_source_is_advisory(self):
+        res = self._failing_result(read_something=True)
         self.assertFalse(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=True))
 
-    def test_bundle_unread_still_blocks_even_if_verified(self):
-        res = self._failing_result(bundle_observed=False)
+    def test_nothing_read_still_blocks_even_if_verified(self):
+        res = self._failing_result(read_something=False)
         self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=True))
 
+    def test_read_some_docs_without_credited_bundle_is_advisory(self):
+        # Real failure mode: executor read several required docs (and did the
+        # work) but its bundle read was via a command the gate did not credit.
+        # Engaged + completed + verified must be advisory, not Needs Input.
+        bundle = Path("/wt/.dora/source-bundles/B/T01/source-bundle.md")
+        doc1 = Path("/wt/docs/dora/batches/A/T11.md")
+        doc2 = Path("/wt/docs/audit/gap.md")
+        res = SourceEvidenceResult(
+            ok=False,
+            required_paths=(bundle, doc1, doc2),
+            observed_paths=(doc1,),
+            missing_paths=(bundle, doc2),
+            message="missing",
+        )
+        self.assertFalse(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=True))
+
     def test_not_agent_done_still_blocks(self):
-        res = self._failing_result(bundle_observed=True)
+        res = self._failing_result(read_something=True)
         self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_unverified", verification_pass=True))
 
     def test_verification_failed_still_blocks(self):
-        res = self._failing_result(bundle_observed=True)
+        res = self._failing_result(read_something=True)
         self.assertTrue(source_evidence_blocks(res, agent_outcome="agent_done", verification_pass=False))

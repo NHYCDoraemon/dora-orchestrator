@@ -108,25 +108,19 @@ def source_evidence_blocks(
 ) -> bool:
     """Whether a source-evidence shortfall should block the task as Needs Input.
 
-    A completed, verified run that read the source bundle is trusted: the
-    individual declared docs it skipped are advisory, not blocking — the
-    bundle already enumerated them and verification (acceptance checks)
-    independently proved the work. A run that never read the bundle (e.g. a
-    noop/lazy executor) is still blocked.
+    A completed, verified run that engaged with the provided sources (read at
+    least one required path) is trusted: the individual declared docs it
+    skipped are advisory, not blocking — verification (acceptance checks)
+    independently proved the work, and which exact files were opened depends on
+    brittle command-recognition. A run that read *nothing* (e.g. a noop/lazy
+    executor that never grounded itself in any source) is still blocked.
     """
     if result.ok:
         return False
-    if agent_outcome == "agent_done" and verification_pass and _bundle_observed(result):
+    engaged = bool(result.observed_paths)
+    if agent_outcome == "agent_done" and verification_pass and engaged:
         return False
     return True
-
-
-def _bundle_observed(result: SourceEvidenceResult) -> bool:
-    observed = set(result.observed_paths)
-    return any(
-        _is_source_bundle(path) and path in observed
-        for path in result.required_paths
-    )
 
 
 def _observed_paths(
