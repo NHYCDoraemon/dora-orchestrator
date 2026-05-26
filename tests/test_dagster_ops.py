@@ -1,6 +1,8 @@
 import json
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from orchestrator.dagster_defs.ops import _executor_env_for, _format_progress_log
 from orchestrator.dagster_defs.project_config import ProjectConfig
@@ -36,7 +38,7 @@ class DagsterOpsProgressLogTest(unittest.TestCase):
 
 
 class DagsterOpsExecutorEnvTest(unittest.TestCase):
-    def test_claude_executor_does_not_receive_codex_home(self):
+    def test_claude_executor_receives_java17_environment(self):
         cfg = ProjectConfig(
             slug="process-frontend",
             title="ProcessEngineFrontend",
@@ -45,9 +47,14 @@ class DagsterOpsExecutorEnvTest(unittest.TestCase):
             codex_home=Path("/tmp/codex-home"),
         )
 
-        self.assertIsNone(_executor_env_for("claude", cfg))
+        with patch.dict(os.environ, {"ORCHESTRATOR_JAVA_HOME": "/tmp/jdk-17", "PATH": "/usr/bin"}, clear=False):
+            env = _executor_env_for("claude", cfg)
 
-    def test_codex_executor_receives_codex_home(self):
+        self.assertEqual(env["JAVA_HOME"], "/tmp/jdk-17")
+        self.assertEqual(env["PATH"], "/tmp/jdk-17/bin:/usr/bin")
+        self.assertNotIn("CODEX_HOME", env)
+
+    def test_codex_executor_receives_codex_home_and_java17_environment(self):
         cfg = ProjectConfig(
             slug="process-frontend",
             title="ProcessEngineFrontend",
@@ -56,4 +63,9 @@ class DagsterOpsExecutorEnvTest(unittest.TestCase):
             codex_home=Path("/tmp/codex-home"),
         )
 
-        self.assertEqual(_executor_env_for("codex", cfg), {"CODEX_HOME": "/tmp/codex-home"})
+        with patch.dict(os.environ, {"ORCHESTRATOR_JAVA_HOME": "/tmp/jdk-17", "PATH": "/usr/bin"}, clear=False):
+            env = _executor_env_for("codex", cfg)
+
+        self.assertEqual(env["CODEX_HOME"], "/tmp/codex-home")
+        self.assertEqual(env["JAVA_HOME"], "/tmp/jdk-17")
+        self.assertEqual(env["PATH"], "/tmp/jdk-17/bin:/usr/bin")

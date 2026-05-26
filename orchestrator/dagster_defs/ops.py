@@ -11,6 +11,9 @@ refresh are handled by ``run_ready_batch_task`` / ``_execute_one_task``.
 """
 
 import json
+import os
+import subprocess
+from pathlib import Path
 
 from .project_config import ProjectConfig
 
@@ -23,9 +26,48 @@ def _format_progress_log(event: str, data: dict) -> str:
 
 
 def _executor_env_for(executor: str, cfg: ProjectConfig) -> dict[str, str] | None:
+    env: dict[str, str] = {}
     if executor == "codex":
-        return {"CODEX_HOME": str(cfg.codex_home)}
-    return None
+        env["CODEX_HOME"] = str(cfg.codex_home)
+
+    java_home = _resolve_java17_home()
+    if java_home:
+        env["JAVA_HOME"] = java_home
+        env["PATH"] = f"{java_home}/bin:{os.environ.get('PATH', '')}"
+
+    return env or None
+
+
+def _resolve_java17_home() -> str:
+    for key in ("ORCHESTRATOR_JAVA_HOME", "JAVA17_HOME"):
+        value = os.environ.get(key)
+        if value:
+            return value
+
+    java_home = Path("/usr/libexec/java_home")
+    if java_home.exists():
+        try:
+            proc = subprocess.run(
+                [str(java_home), "-v", "17"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip().splitlines()[-1]
+
+    common_paths = [
+        Path("/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home"),
+        Path("/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"),
+        Path("/usr/local/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"),
+    ]
+    for path in common_paths:
+        if path.exists():
+            return str(path)
+    return ""
 
 
 def build_single_op(cfg: ProjectConfig):

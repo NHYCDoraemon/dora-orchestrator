@@ -184,6 +184,42 @@ class ExecutorNoopTest(unittest.TestCase):
             self.assertEqual(outcome, "agent_hard_timeout")
             self.assertIn("120s", summary)
 
+    def test_successful_claude_run_uses_result_text_as_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            event_path = Path(tmp) / "events.ndjson"
+            event_path.write_text(
+                json.dumps({
+                    "type": "result",
+                    "subtype": "success",
+                    "result": "Implemented changes.\nRESULT: item-R020-implementation done - verified",
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            outcome, summary = _classify_outcome(0, event_path)
+
+        self.assertEqual(outcome, "agent_done")
+        self.assertIn("RESULT: item-R020-implementation done", summary)
+
+    def test_classify_socket_closed_as_transient(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            event_path = Path(tmp) / "events.ndjson"
+            event_path.write_text(
+                json.dumps({
+                    "type": "result",
+                    "result": (
+                        "API Error: The socket connection was closed unexpectedly. "
+                        "For more information, pass `verbose: true` in the second argument to fetch()"
+                    ),
+                }) + "\n",
+                encoding="utf-8",
+            )
+
+            outcome, summary = _classify_outcome(1, event_path)
+
+            self.assertEqual(outcome, "agent_transient_error")
+            self.assertIn("socket connection was closed", summary)
+
     def test_kill_process_group_terminates_tree(self):
         """Spawn a process tree, kill the group, verify nothing survives."""
         with tempfile.TemporaryDirectory() as tmp:

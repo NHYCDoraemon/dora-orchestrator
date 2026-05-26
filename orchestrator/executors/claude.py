@@ -163,8 +163,6 @@ def _classify_outcome(
     * ``agent_hard_timeout`` — total runtime exceeded `hard_timeout_seconds` s.
     * ``agent_err:N`` — all other non-zero exits → genuine task failure.
     """
-    if rc == 0:
-        return "agent_done", f"{agent_label} exited with 0."
     if rc == RC_IDLE_TIMEOUT:
         return (
             "agent_idle_timeout",
@@ -179,6 +177,8 @@ def _classify_outcome(
     if result_text_extractor is None:
         result_text_extractor = _claude_result_text
     result_text = result_text_extractor(event_path) or ""
+    if rc == 0:
+        return "agent_done", result_text.strip() or f"{agent_label} exited with 0."
 
     # ── config errors ──────────────────────────────────────────────
     _config_patterns = [
@@ -205,6 +205,9 @@ def _classify_outcome(
         r"529.*overloaded",
         r"timeout",
         r"timed.?out",
+        r"socket.*closed",
+        r"connection.*closed",
+        r"fetch\\(\\).*closed",
         r"connection.*reset",
         r"connection.*refused",
         r"temporary.*failure",
