@@ -772,7 +772,7 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         self.assertIsNotNone(ready)
         self.assertEqual(ready["external_id"], "DORA-PLN-20260501B-T02")
 
-    def test_noop_executor_without_required_reads_blocks_release(self):
+    def test_uncredited_source_reads_do_not_block_verified_completion(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
             client = InMemoryPlaneClient()
@@ -794,18 +794,21 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
 
         task_result = result["runs"][0]
         issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
-        self.assertEqual(task_result["outcome"], "source_evidence_missing")
-        self.assertEqual(task_result["state"], "Needs Input")
+        # Source-evidence is advisory: a completed, verified run is trusted even
+        # when no required read could be credited (reads may be done via
+        # Bash/git/compound commands the gate cannot parse).
+        self.assertEqual(task_result["outcome"], "agent_done")
+        self.assertEqual(task_result["state"], "Done")
         self.assertTrue(task_result["verification"]["pass"])
         self.assertFalse(task_result["source_evidence"]["pass"])
         self.assertTrue(task_result["source_evidence"]["missing_paths"])
-        self.assertEqual(issue["state"], "Needs Input")
-        self.assertIn("dora:source-evidence-missing", issue.get("labels") or [])
+        self.assertEqual(issue["state"], "Done")
+        self.assertIn("dora:source-evidence-advisory", issue.get("labels") or [])
         markers = [comment["marker"] for comment in client.comments]
         self.assertIn("dora-loop:source-evidence", markers)
         self.assertIn(("source_evidence", {"external_id": "DORA-PLN-20260501B-T01", "pass": False}), events)
         report = client.reports[-1]
-        self.assertEqual(report["outcome"], "source_evidence_missing")
+        self.assertEqual(report["outcome"], "agent_done")
         self.assertFalse(report["source_evidence"]["pass"])
 
     def test_executor_reading_all_required_paths_allows_done(self):
@@ -829,7 +832,7 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         self.assertTrue(task_result["source_evidence"]["pass"])
         self.assertEqual(task_result["source_evidence"]["missing_paths"], [])
 
-    def test_delivery_is_skipped_when_source_evidence_missing(self):
+    def test_delivery_runs_for_verified_completion_despite_incomplete_source_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
             client = InMemoryPlaneClient()
@@ -846,11 +849,12 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
                 result = run_ready_batch_task(config, plane_client=client, run_id="source-evidence-delivery", delivery=delivery)
 
         task_result = result["runs"][0]
-        self.assertEqual(task_result["outcome"], "source_evidence_missing")
+        # Advisory source-evidence no longer blocks; a verified completion
+        # proceeds to delivery.
+        self.assertEqual(task_result["outcome"], "agent_done")
         self.assertTrue(task_result["verification"]["pass"])
         self.assertFalse(task_result["source_evidence"]["pass"])
-        self.assertNotIn("delivery", task_result)
-        run_delivery.assert_not_called()
+        run_delivery.assert_called()
 
     def test_missing_required_source_doc_blocks_before_claim(self):
         with tempfile.TemporaryDirectory() as tmp:

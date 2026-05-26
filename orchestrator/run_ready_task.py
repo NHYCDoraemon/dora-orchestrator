@@ -22,7 +22,7 @@ from .spec_loader import load_project_spec
 from .acceptance import run_acceptance_checks
 from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
 from .source_context import SOURCE_DOC_KEYS
-from .source_evidence import evaluate_source_evidence_from_event_path, source_evidence_blocks
+from .source_evidence import evaluate_source_evidence_from_event_path
 from .task_graph import build_task_graph
 
 ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
@@ -426,13 +426,13 @@ def _execute_one_task(
         if on_progress:
             on_progress("source_evidence", {"external_id": external_id, "pass": source_evidence.ok})
 
-        if source_evidence_blocks(
-            source_evidence,
-            agent_outcome=result.outcome,
-            verification_pass=bool(verification["pass"]),
-        ):
-            outcome = "source_evidence_missing"
-        elif strict_progress and result_signal is not None:
+        # Source-evidence is advisory only. Its read-crediting cannot reliably
+        # observe reads done via Bash / git show / compound commands, so a
+        # completed, verified run must not be blocked just because no read was
+        # credited. Anti-laziness is enforced by acceptance_rigor (mandatory
+        # non-trivial verification) plus the verification result below; an
+        # incomplete source-evidence picture is recorded as a warning, not a gate.
+        if strict_progress and result_signal is not None:
             outcome = _progress_controlled_outcome(result.outcome, bool(verification["pass"]), result_signal)
         elif result.outcome == "agent_done" and not verification["pass"]:
             outcome = "agent_unverified"
@@ -440,18 +440,7 @@ def _execute_one_task(
             outcome = result.outcome
 
         retry_count = _read_retry_count(claimed)
-        if outcome == "source_evidence_missing":
-            terminal_state = "Needs Input"
-            if hasattr(plane_client, "add_label"):
-                plane_client.add_label(config.project_slug, external_id, "dora:source-evidence-missing")
-            _emit(
-                plane_client,
-                config.project_slug,
-                external_id,
-                "dora-loop:source-evidence",
-                source_evidence.message,
-            )
-        elif outcome == "agent_done":
+        if outcome == "agent_done":
             terminal_state = "Done"
         elif strict_progress and result_signal and result_signal.get("status") == "needs_input":
             terminal_state = "Needs Input"
@@ -465,7 +454,7 @@ def _execute_one_task(
             retry_count += 1
             _write_retry_count(plane_client, config.project_slug, external_id, retry_count)
 
-        if not source_evidence.ok and outcome != "source_evidence_missing":
+        if not source_evidence.ok:
             if hasattr(plane_client, "add_label"):
                 plane_client.add_label(config.project_slug, external_id, "dora:source-evidence-advisory")
             _emit(
@@ -500,9 +489,6 @@ def _execute_one_task(
             },
         )
         plane_client.release_issue(config.project_slug, external_id, terminal_state)
-        if outcome == "source_evidence_missing" and hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
-            plane_client.issues[(config.project_slug, external_id)]["state"] = "Needs Input"
-            plane_client.issues[(config.project_slug, external_id)]["assignee"] = None
         _released = True
         if strict_progress and result_signal is not None:
             _write_progress_projection(

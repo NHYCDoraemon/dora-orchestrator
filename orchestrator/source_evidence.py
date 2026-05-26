@@ -100,29 +100,6 @@ def evaluate_source_evidence(
     )
 
 
-def source_evidence_blocks(
-    result: SourceEvidenceResult,
-    *,
-    agent_outcome: str,
-    verification_pass: bool,
-) -> bool:
-    """Whether a source-evidence shortfall should block the task as Needs Input.
-
-    A completed, verified run that engaged with the provided sources (read at
-    least one required path) is trusted: the individual declared docs it
-    skipped are advisory, not blocking — verification (acceptance checks)
-    independently proved the work, and which exact files were opened depends on
-    brittle command-recognition. A run that read *nothing* (e.g. a noop/lazy
-    executor that never grounded itself in any source) is still blocked.
-    """
-    if result.ok:
-        return False
-    engaged = bool(result.observed_paths)
-    if agent_outcome == "agent_done" and verification_pass and engaged:
-        return False
-    return True
-
-
 def _observed_paths(
     events: Iterable[Mapping[str, Any]],
     worktree_root: Path,
