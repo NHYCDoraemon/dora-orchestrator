@@ -108,6 +108,95 @@ class BatchLoaderTest(unittest.TestCase):
                 load_task_issue_batch(batch_dir, repo_root=repo)
 
 
+_TASK_SECTIONS = """
+# Task Summary
+
+概要。
+
+# Development Context
+
+背景。
+
+# Scope
+
+范围。
+
+# Non-goals
+
+非目标。
+
+# Implementation Detail
+
+实现。
+
+# Acceptance
+
+验收。
+
+# Verification
+
+验证。
+
+# Stop Conditions
+
+停止。
+
+# Executor Prompt Contract
+
+契约。
+"""
+
+
+class LoaderAcceptanceChecksTest(unittest.TestCase):
+    def test_loads_acceptance_checks_mapping_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            base = repo / "docs" / "dora" / "batches" / "20260526A"
+            _write(base / "batch.md", (
+                "---\n"
+                "batch_id: 20260526A\n"
+                "program_id: ACC\n"
+                "program_prefix: ACC\n"
+                "title: \"验收下限\"\n"
+                "status: draft\n"
+                "---\n\n# 批次\n\n说明。\n"
+            ))
+            _write(base / "program-page.md", "# 计划\n\n说明。\n")
+            _write(base / "tasks" / "ACC-ACC-20260526A-T01.md", (
+                "---\n"
+                "task_id: ACC-ACC-20260526A-T01\n"
+                "title: \"验收任务\"\n"
+                "module: verification\n"
+                "sequence: 1\n"
+                "batch_id: 20260526A\n"
+                "program_prefix: ACC\n"
+                "acceptance_checks:\n"
+                "  - kind: contains_sections\n"
+                "    path: docs/audit/report.md\n"
+                "    headings:\n"
+                "      - \"## A.\"\n"
+                "      - \"## B.\"\n"
+                "  - kind: min_matches\n"
+                "    path: docs/audit/report.md\n"
+                "    pattern: '^\\| .+ \\|'\n"
+                "    min: 10\n"
+                "---\n"
+                f"{_TASK_SECTIONS}"
+            ))
+            batch = load_task_issue_batch(base, repo_root=repo)
+            checks = batch.tasks[0].metadata["acceptance_checks"]
+            self.assertEqual(checks[0]["kind"], "contains_sections")
+            self.assertEqual(checks[0]["headings"], ["## A.", "## B."])
+            self.assertEqual(checks[1]["kind"], "min_matches")
+            self.assertEqual(checks[1]["min"], 10)
+            self.assertEqual(checks[1]["pattern"], "^\\| .+ \\|")
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 def create_batch(repo: Path, *, with_source_table: bool = False, with_task_row_id: bool = False) -> Path:
     batch_dir = repo / "docs" / "dora" / "batches" / "20260501A"
     tasks_dir = batch_dir / "tasks"
