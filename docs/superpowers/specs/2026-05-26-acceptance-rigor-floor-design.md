@@ -63,7 +63,7 @@ acceptance boundary**.
 | Assertion carrier | New structured `acceptance_checks` schema in task frontmatter, classifiable by audit. |
 | Backward compatibility | New field coexists with `verification_commands`. Loop runs `acceptance_checks` when present, else falls back to `verification_commands`. Rigor floor is enforced at audit for **new batches only**. |
 | Done wiring | Reuse the existing verification → outcome path. No new terminal state. |
-| Live serialization | `acceptance_checks` is serialized to a single scalar `acceptance_checks_json` for live-backend frontmatter round-trip. |
+| Live serialization | Reuse the existing live JSON metadata block: add `acceptance_checks` to `_DORA_METADATA_KEYS`. It round-trips as native JSON exactly like `source_queries`. |
 
 ## Schema: `acceptance_checks`
 
@@ -177,7 +177,8 @@ After existing source/preflight validation, for each task:
 
 In the `upsert_issue` payload (near `verification_commands`, ~line 118) add
 `acceptance_checks` sourced from task metadata, alongside the existing fields.
-For the live backend the value is serialized (see below).
+It is a native list of dicts; the live backend round-trips it via its existing
+JSON metadata block (see below).
 
 ### `orchestrator/run_ready_task.py` (modify)
 
@@ -208,10 +209,13 @@ Partial instead of Done, reusing the existing retry/circuit-breaker machinery.
 ### Plane backend round-trip
 
 - **memory / local**: store/return `acceptance_checks` as a native list.
-- **live** (`plane_live.py`): `acceptance_checks` is a nested list, which is
-  fragile inside HTML/YAML frontmatter. Serialize to a single scalar
-  `acceptance_checks_json` (JSON string) on write; parse it back on read. This
-  is the most fragile edge and is contained to one scalar field.
+- **live** (`plane_live.py`): reuse the existing JSON metadata block. The
+  backend already serializes nested structures (`source_docs`, `source_tables`,
+  `source_queries`) into a `<!-- dora:metadata ... -->` block via
+  `json.dumps`/`json.loads` (`_append_metadata_block`/`_extract_metadata_block`,
+  keyed by `_DORA_METADATA_KEYS`). Add `"acceptance_checks"` to
+  `_DORA_METADATA_KEYS`; it round-trips as native JSON exactly like
+  `source_queries`. No new serialize/parse helpers, no special scalar.
 
 ## Data Flow
 
@@ -228,8 +232,8 @@ batch_submit ── upsert_issue(acceptance_checks | acceptance_checks_json)
 Plane issue
       │
       ▼
-run_ready_batch_task ── has acceptance_checks? ──► run_acceptance_checks
-      │                                  else  ──► _run_verification_commands (fallback)
+run_ready_batch_task ── acceptance_checks present? ──► run_acceptance_checks
+      │                                       else  ──► _run_verification_commands (fallback)
       ▼
 verification["pass"] ─► existing outcome logic ─► Done | Partial(retry) | Needs Input
 ```
@@ -274,6 +278,6 @@ pytest).
    `verification_commands`.
 5. A task whose content assertion fails after `agent_done` becomes Partial (not
    Done) and reuses the existing retry path.
-6. `acceptance_checks` round-trips through the live backend via
-   `acceptance_checks_json`.
+6. `acceptance_checks` round-trips through the live backend via the existing
+   JSON metadata block (`_DORA_METADATA_KEYS`).
 7. Already-submitted issues are untouched; no retroactive failure.
