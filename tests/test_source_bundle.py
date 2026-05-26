@@ -81,6 +81,38 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("current_task_row.tsv", bundle_text)
             self.assertNotIn("Use the real forms API.", bundle_text)
 
+    def test_binary_source_docs_are_attested_but_not_required_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            (repo / "docs").mkdir()
+            design = repo / "docs" / "design.md"
+            design.write_text("# Design\n", encoding="utf-8")
+            spreadsheet = repo / "ledger.xlsx"
+            spreadsheet.write_bytes(b"xlsx")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "source_docs": [
+                    {"kind": "source_docs", "path": "docs/design.md", "required": True},
+                    {"kind": "source_docs", "path": "ledger.xlsx", "required": True},
+                ],
+                "source_tables": [],
+                "source_queries": [],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo)
+
+            self.assertTrue(result.ok, result.message)
+            self.assertIn(design, result.required_read_paths)
+            self.assertNotIn(spreadsheet, result.required_read_paths)
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertIn(str(spreadsheet), [doc["absolute_path"] for doc in manifest["source_docs"]])
+            bundle_text = result.bundle_path.read_text(encoding="utf-8")
+            required_reads_section = bundle_text.split("## Source Docs", 1)[0]
+            self.assertIn("docs/design.md", required_reads_section)
+            self.assertNotIn("ledger.xlsx", required_reads_section)
+            self.assertIn("ledger.xlsx", bundle_text)
+
     def test_issue_external_id_filter_matches_audit_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()

@@ -20,6 +20,17 @@ from .source_slicing import SliceResult, render_query_slice
 
 
 SOURCE_PACKET_KEYS = ("source_docs", "source_tables", "source_queries")
+_BINARY_SOURCE_DOC_SUFFIXES = {
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsb",
+    ".xlsm",
+    ".xlsx",
+}
 
 
 @dataclass(frozen=True)
@@ -136,7 +147,11 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
             if query.required:
                 required_slice_paths.append(result.output_path)
 
-    required_doc_paths = [Path(str(doc["absolute_path"])) for doc in source_docs if doc["required"]]
+    required_doc_paths = [
+        Path(str(doc["absolute_path"]))
+        for doc in source_docs
+        if doc["required"] and _is_direct_read_source_doc(Path(str(doc["absolute_path"])))
+    ]
     required_table_paths = [Path(str(table["absolute_path"])) for table in table_manifest if table["required"]]
     required_read_paths = _unique_paths([bundle_path, *required_doc_paths, *required_table_paths, *required_slice_paths])
     manifest = {
@@ -266,6 +281,10 @@ def _manifest_doc(doc: Mapping[str, object], repo_root: Path) -> dict[str, objec
         "required": doc["required"],
         "sha256": str(doc.get("sha256") or (hash_file(absolute) if absolute.is_file() else "")),
     }
+
+
+def _is_direct_read_source_doc(path: Path) -> bool:
+    return path.suffix.lower() not in _BINARY_SOURCE_DOC_SUFFIXES
 
 
 def _batch_id(issue: Mapping[str, object]) -> str:
