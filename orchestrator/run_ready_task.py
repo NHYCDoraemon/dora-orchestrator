@@ -19,6 +19,7 @@ from .local_artifacts import create_run_artifacts
 from .plane_backends import create_plane_client
 from .plane_provisioner import provision_project
 from .spec_loader import load_project_spec
+from .acceptance import run_acceptance_checks
 from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
 from .source_context import SOURCE_DOC_KEYS
 from .source_evidence import evaluate_source_evidence_from_event_path
@@ -399,11 +400,17 @@ def _execute_one_task(
               f"outcome={result.outcome}\nsummary={result.summary}\n"
               f"touched_files={[str(p) for p in result.touched_files]}")
 
-        verification = _run_verification_commands(
-            list(claimed.get("verification_commands") or []),
-            repo_root,
-            extra_env=config.executor_env or {},
-        )
+        acceptance_checks = _issue_acceptance_checks(claimed)
+        if acceptance_checks:
+            verification = run_acceptance_checks(
+                acceptance_checks, repo_root, extra_env=config.executor_env or {},
+            )
+        else:
+            verification = _run_verification_commands(
+                list(claimed.get("verification_commands") or []),
+                repo_root,
+                extra_env=config.executor_env or {},
+            )
         artifacts.verify_path.write_text(_format_verification(verification) + "\n", encoding="utf-8")
         _emit(plane_client, config.project_slug, external_id, "dora-loop:verify",
               _format_verification(verification))
@@ -984,7 +991,11 @@ def _format_verification(verification: dict) -> str:
         return "verification: skipped (no commands declared)"
     lines = [f"verification: {'pass' if verification['pass'] else 'fail'}"]
     for r in verification.get("results", []):
-        lines.append(f"  - rc={r['returncode']} {'ok' if r['ok'] else 'FAIL'}: {r['command']}")
+        label = r.get("command") or r.get("kind") or ""
+        rc = r.get("returncode")
+        rc_text = f"rc={rc} " if rc is not None else ""
+        detail = f" — {r['detail']}" if r.get("detail") else ""
+        lines.append(f"  - {rc_text}{'ok' if r['ok'] else 'FAIL'}: {label}{detail}")
     return "\n".join(lines)
 
 
@@ -1591,3 +1602,10 @@ def _run_verification_commands(
         all_pass = all_pass and ok
         results.append({"command": command, "ok": ok, "returncode": returncode})
     return {"pass": all_pass, "skipped": False, "results": results}
+
+
+def _issue_acceptance_checks(issue: Mapping[str, object]) -> list[dict]:
+    value = issue.get("acceptance_checks")
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []
