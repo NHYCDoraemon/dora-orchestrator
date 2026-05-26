@@ -29,6 +29,7 @@ _DORA_METADATA_KEYS = [
     "source_tables",
     "source_queries",
     "verification_commands",
+    "acceptance_checks",
 ]
 ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
 _ORCHESTRATOR_STATE_PAYLOADS = {
