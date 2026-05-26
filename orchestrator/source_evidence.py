@@ -30,6 +30,17 @@ _GREP_VALUE_OPTIONS = {
     "-t",
 }
 _GREP_PATTERN_OPTIONS = {"--file", "--regexp", "-e", "-f"}
+_BINARY_SOURCE_DOC_SUFFIXES = {
+    ".doc",
+    ".docx",
+    ".pdf",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsb",
+    ".xlsm",
+    ".xlsx",
+}
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,7 @@ def evaluate_source_evidence(
     required = tuple(_normalize_path(path, root) for path in required_paths)
     relative_required = _required_relative_paths(required, root)
     observed = _observed_paths(events, root, required, relative_required)
+    observed = _with_bundle_satisfied_binary_sources(observed, required)
     observed_set = set(observed)
     missing = tuple(path for path in required if path not in observed_set)
     ok = not missing
@@ -115,6 +127,33 @@ def _observed_paths(
         for path in claude_tool_paths.get(tool_id, ())
     ]
     return _unique_paths([*codex_paths, *claude_paths])
+
+
+def _with_bundle_satisfied_binary_sources(
+    observed_paths: tuple[Path, ...],
+    required_paths: tuple[Path, ...],
+) -> tuple[Path, ...]:
+    observed_set = set(observed_paths)
+    bundle_observed = any(
+        _is_source_bundle(path) and path in observed_set
+        for path in required_paths
+    )
+    if not bundle_observed:
+        return observed_paths
+    implicit_paths = [
+        path
+        for path in required_paths
+        if _is_binary_source_doc(path) and path.is_file()
+    ]
+    return _unique_paths([*observed_paths, *implicit_paths])
+
+
+def _is_source_bundle(path: Path) -> bool:
+    return path.name == "source-bundle.md" and "source-bundles" in path.parts
+
+
+def _is_binary_source_doc(path: Path) -> bool:
+    return path.suffix.lower() in _BINARY_SOURCE_DOC_SUFFIXES
 
 
 def _collect_claude_tool_uses(

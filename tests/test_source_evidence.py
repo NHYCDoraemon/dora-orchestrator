@@ -32,6 +32,51 @@ class SourceEvidenceTest(unittest.TestCase):
             self.assertIs(result.ok, True)
             self.assertEqual(result.missing_paths, ())
 
+    def test_source_bundle_read_satisfies_binary_source_doc_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bundle = tmp_path / ".dora" / "source-bundles" / "20260501A" / "T01" / "source-bundle.md"
+            spreadsheet = tmp_path / "process-engine_需求实现对照清单_v2.xlsx"
+            for path in (bundle, spreadsheet):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
+
+            result = evaluate_source_evidence(
+                events=[
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "read_bundle",
+                                    "name": "Read",
+                                    "input": {"file_path": str(bundle)},
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": "read_bundle",
+                                    "content": "bundle",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                worktree_root=tmp_path,
+                required_paths=[bundle, spreadsheet],
+            )
+
+            self.assertIs(result.ok, True)
+            self.assertEqual(result.missing_paths, ())
+            self.assertIn(spreadsheet.resolve(), result.observed_paths)
+
     def test_claude_read_without_tool_result_does_not_satisfy_required_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
