@@ -7,12 +7,15 @@ from collections.abc import Iterable, Mapping
 
 SOURCE_EVIDENCE_MISSING_LABEL = "dora:source-evidence-missing"
 SOURCE_CONTEXT_MISSING_LABEL = "dora:source-context-missing"
+ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
 SOURCE_PACKET_KEYS = ("source_docs", "source_tables", "source_queries")
 
 
 def classify_source_context(issue: Mapping[str, object]) -> str:
     labels = set(_label_names(issue.get("labels")))
     labels.update(_label_names(issue.get("label_names")))
+    if ORCHESTRATOR_INVALID_SUBMISSION_LABEL in labels:
+        return "orchestrator_invalid_submission"
     if SOURCE_EVIDENCE_MISSING_LABEL in labels:
         return "source_evidence_missing"
     if SOURCE_CONTEXT_MISSING_LABEL in labels:

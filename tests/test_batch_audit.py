@@ -126,6 +126,33 @@ class BatchAuditTest(unittest.TestCase):
             self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
             self.assertFalse(any(finding.code == "source_query_column" for finding in result.findings))
 
+    def test_rejects_query_context_that_submit_would_not_serialize(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "value_from: task.row_id",
+                    "value_from: task.custom_context",
+                ),
+                encoding="utf-8",
+            )
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_path.write_text(
+                task_path.read_text(encoding="utf-8").replace(
+                    "row_id: F97-036\n",
+                    "row_id: F97-036\ncustom_context: F97-036\n",
+                ),
+                encoding="utf-8",
+            )
+
+            result = audit_task_issue_batch(batch_dir, repo_root=repo)
+
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(finding.code == "source_bundle_preflight" for finding in result.findings))
+            self.assertTrue(any("task.custom_context" in finding.message for finding in result.findings))
+
     def test_optional_missing_source_table_passes_audit_and_hashes(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

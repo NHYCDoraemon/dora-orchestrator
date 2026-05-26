@@ -44,7 +44,12 @@ class SourceBundleResult:
     message: str = ""
 
 
-def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) -> SourceBundleResult:
+def create_source_bundle(
+    *,
+    issue: Mapping[str, object],
+    worktree_root: Path,
+    write_output: bool = True,
+) -> SourceBundleResult:
     repo_root = worktree_root.resolve()
     batch_id = _batch_id(issue)
     task_key = _task_key(issue)
@@ -126,6 +131,7 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
             query=query,
             context=_source_query_context(issue),
             output_path=output_path,
+            write_output=write_output,
         )
         slice_results.append(result)
         if not result.ok:
@@ -164,9 +170,10 @@ def create_source_bundle(*, issue: Mapping[str, object], worktree_root: Path) ->
         "slices": slice_manifest,
         "required_read_paths": [str(path) for path in required_read_paths],
     }
-    bundle_root.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    bundle_path.write_text(_render_bundle_markdown(manifest), encoding="utf-8")
+    if write_output:
+        bundle_root.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        bundle_path.write_text(_render_bundle_markdown(manifest), encoding="utf-8")
 
     return SourceBundleResult(
         ok=True,

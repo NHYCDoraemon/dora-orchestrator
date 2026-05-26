@@ -149,6 +149,16 @@ class StatusCliTest(unittest.TestCase):
                 **_packet_metadata(),
             },
         )
+        client.upsert_issue(
+            "demo",
+            "DEMO-T05",
+            {
+                "name": "invalid submission blocked",
+                "depends_on": ["DEMO-MISSING"],
+                "labels": ["dora:orchestrator-invalid-submission"],
+                **_packet_metadata(),
+            },
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, slug="demo", title="Demo")
@@ -165,11 +175,13 @@ class StatusCliTest(unittest.TestCase):
         self.assertEqual(blocked["DEMO-T02"], "packet_v1")
         self.assertEqual(blocked["DEMO-T03"], "source_evidence_missing")
         self.assertEqual(blocked["DEMO-T04"], "source_context_missing")
+        self.assertEqual(blocked["DEMO-T05"], "orchestrator_invalid_submission")
         stderr_text = stderr.getvalue()
         self.assertIn("source_context: legacy_or_missing_packet", stderr_text)
         self.assertIn("source_context: packet_v1", stderr_text)
         self.assertIn("source_context: source_evidence_missing", stderr_text)
         self.assertIn("source_context: source_context_missing", stderr_text)
+        self.assertIn("source_context: orchestrator_invalid_submission", stderr_text)
 
     def test_blocked_stderr_includes_source_context_without_show_blocked(self):
         from orchestrator.in_memory_plane import InMemoryPlaneClient

@@ -43,6 +43,41 @@ class BatchSubmitTest(unittest.TestCase):
             self.assertNotIn("# Task Summary", task["body"])
             self.assertEqual(task["agent_hint"], "claude")
 
+    def test_rejects_unserializable_source_context_before_plane_writes(self):
+        class _WriteFailingPlaneClient(InMemoryPlaneClient):
+            def upsert_project(self, slug, title):
+                raise AssertionError("submit wrote to Plane before source preflight")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_batch(repo, with_source_table=True, with_task_row_id=True)
+            batch_path = batch_dir / "batch.md"
+            batch_path.write_text(
+                batch_path.read_text(encoding="utf-8").replace(
+                    "value_from: task.row_id",
+                    "value_from: task.custom_context",
+                ),
+                encoding="utf-8",
+            )
+            task_path = batch_dir / "tasks" / "DORA-CTX-20260501A-T01.md"
+            task_path.write_text(
+                task_path.read_text(encoding="utf-8").replace(
+                    "row_id: F97-036\n",
+                    "row_id: F97-036\ncustom_context: F97-036\n",
+                ),
+                encoding="utf-8",
+            )
+            batch_dir = approve_batch(repo, batch_dir)
+
+            with self.assertRaisesRegex(ValueError, "failing audit|source preflight failed"):
+                submit_task_issue_batch(
+                    batch_dir,
+                    repo_root=repo,
+                    project_slug="dora",
+                    project_title="Dora",
+                    plane_client=_WriteFailingPlaneClient(),
+                )
+
     def test_submits_required_skills_to_task_issue(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

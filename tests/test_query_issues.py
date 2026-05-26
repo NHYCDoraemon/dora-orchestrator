@@ -227,6 +227,16 @@ class QueryIssuesCliTest(unittest.TestCase):
                 **_packet_metadata(),
             },
         )
+        client.upsert_issue(
+            "demo",
+            "DEMO-SRC-T05",
+            {
+                "name": "invalid submission issue",
+                "depends_on": [],
+                "labels": ["dora:orchestrator-invalid-submission"],
+                **_packet_metadata(),
+            },
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp)
@@ -243,11 +253,13 @@ class QueryIssuesCliTest(unittest.TestCase):
         self.assertEqual(source_context["DEMO-SRC-T02"], "packet_v1")
         self.assertEqual(source_context["DEMO-SRC-T03"], "source_evidence_missing")
         self.assertEqual(source_context["DEMO-SRC-T04"], "source_context_missing")
+        self.assertEqual(source_context["DEMO-SRC-T05"], "orchestrator_invalid_submission")
         stderr_text = stderr.getvalue()
         self.assertIn("legacy_or_missing_packet", stderr_text)
         self.assertIn("packet_v1", stderr_text)
         self.assertIn("source_evidence_missing", stderr_text)
         self.assertIn("source_context_missing", stderr_text)
+        self.assertIn("orchestrator_invalid_submission", stderr_text)
 
 
 class QueryIssuesCliSubcommandTest(unittest.TestCase):

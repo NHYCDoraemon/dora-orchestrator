@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +11,14 @@ from orchestrator.delivery import DeliveryConfig, DeliveryResult
 from orchestrator.executor_protocol import ExecutorResult
 from orchestrator.executors.claude import _resolve_claude_binary
 from orchestrator.in_memory_plane import InMemoryPlaneClient
-from orchestrator.run_ready_task import _format_stream_line, _render_executor_prompt, run_ready_batch_task
+from orchestrator.run_ready_task import (
+    _build_resume_context,
+    _format_stream_line,
+    _materialize_source_context_files,
+    _render_executor_prompt,
+    _run_verification_commands,
+    run_ready_batch_task,
+)
 
 
 def _packet_metadata() -> dict[str, object]:
@@ -125,6 +134,16 @@ class _ReadRequiredSourceExecutor:
                 f.write(json.dumps({"type": "executor.started", "backend": self.backend_event, "run_id": context.run_id}, sort_keys=True))
                 f.write("\n")
         return ExecutorResult(self.outcome, self.summary, [])
+
+
+class _TransientSourceExecutor:
+    def run(self, context):
+        _write_read_events_for_prompt(context)
+        return ExecutorResult(
+            "agent_transient_error",
+            "Transient error (rc=1): API Error: The socket connection was closed unexpectedly.",
+            [],
+        )
 
 
 def _seed_progress_task(client: InMemoryPlaneClient, *, summary: str = "") -> None:
@@ -252,6 +271,66 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertIn("# Progress Control Contract", prompt)
         self.assertIn("RESULT: B06-F97-036-form-list <done|partial|needs_input>", prompt)
         self.assertIn("acceptance_signal: 真实接口响应驱动页面。", prompt)
+
+    def test_executor_prompt_includes_resume_context_when_wip_commit_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@example.com",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@example.com",
+            }
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+            (repo / "README.md").write_text("init\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, env=env, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, env=env, check=True)
+            prev = repo / ".dora" / "loop-runs" / "prev-run"
+            prev.mkdir(parents=True)
+            (prev / "summary.md").write_text(
+                "Claude exited with 1. API Error: The socket connection was closed unexpectedly.\n",
+                encoding="utf-8",
+            )
+            (prev / "verify.txt").write_text(
+                "verification: fail\n  - rc=1 FAIL: mvn -pl platform-gateway-starter test\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "add", "."], cwd=repo, env=env, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "[WIP] MP-GWSTARTER-20260526A-T01: gateway fix",
+                    "-m",
+                    "dagster-run-id: prev-run",
+                ],
+                cwd=repo,
+                env=env,
+                check=True,
+            )
+
+            resume_context = _build_resume_context(repo, "current-run")
+            prompt = _render_executor_prompt(
+                {
+                    "external_id": "MP-GWSTARTER-20260526A-T01",
+                    "key": "MARITIMEPL-23",
+                    "body": "# Gateway task\n",
+                },
+                batch_id="20260526A",
+                branch="orchestrator/20260526A",
+                worktree_path=repo,
+                resume_context=resume_context,
+            )
+
+        self.assertIn("# Resume Context", prompt)
+        self.assertIn("Previous run id: `prev-run`", prompt)
+        self.assertIn("API Error: The socket connection was closed unexpectedly", prompt)
+        self.assertIn("verification: fail", prompt)
+        self.assertIn("git show --stat --oneline HEAD", prompt)
+        self.assertIn("Continue from the existing WIP commit", prompt)
 
     def test_formats_codex_agent_messages(self):
         message = "I will inspect the repository first.\nThen edit."
@@ -422,6 +501,41 @@ class RunReadyBatchTaskTest(unittest.TestCase):
         self.assertFalse(task_result["verification"]["pass"])
         self.assertEqual(task_result["verification"]["results"][0]["ok"], False)
         self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Partial")
+
+    def test_verification_commands_receive_executor_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = _run_verification_commands(
+                ['test "$JAVA_HOME" = "/tmp/jdk-17"'],
+                Path(tmp),
+                extra_env={"JAVA_HOME": "/tmp/jdk-17"},
+            )
+
+        self.assertTrue(result["pass"])
+        self.assertTrue(result["results"][0]["ok"])
+
+    def test_transient_executor_failure_does_not_consume_task_retry_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            _seed_batch_state(client)
+            issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
+            issue["dora_retry_count"] = 3
+            config = OrchestratorConfig(
+                spec_path=Path(tmp) / "unused.json",
+                target_repo=Path(tmp).resolve(),
+                executor="claude",
+                project_slug="dora",
+                project_title="Dora",
+            )
+
+            with patch("orchestrator.run_ready_task.get_executor", return_value=_TransientSourceExecutor()):
+                result = run_ready_batch_task(config, plane_client=client, run_id="run-transient")
+            task_result = result["runs"][0]
+
+        self.assertEqual(task_result["outcome"], "agent_transient_error")
+        self.assertEqual(task_result["state"], "Partial")
+        self.assertEqual(issue["dora_retry_count"], 3)
+        self.assertEqual(client.issues[("dora", "DORA-PLN-20260501B-T01")]["state"], "Partial")
+        self.assertIn("needs:auto-retry", issue.get("labels") or [])
 
     def test_returns_no_ready_when_only_root_epic_is_open(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -611,6 +725,53 @@ class RunReadyBatchTaskEmitsCommentsAndLabelsTest(unittest.TestCase):
 
 
 class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
+    def test_next_ready_skips_orchestrator_invalid_submission_label(self):
+        client = InMemoryPlaneClient()
+        client.upsert_project("dora", "Dora")
+        client.upsert_issue(
+            "dora",
+            "DORA-PLN-20260501B-T01",
+            {
+                "name": "Invalid source packet",
+                "issue_type": "task",
+                "priority": "P1",
+                "depends_on": [],
+                "labels": ["dora:orchestrator-invalid-submission"],
+            },
+        )
+
+        self.assertIsNone(client.next_ready_issue("dora"))
+
+    def test_invalid_submission_does_not_block_next_generated_task(self):
+        client = InMemoryPlaneClient()
+        client.upsert_project("dora", "Dora")
+        client.upsert_issue(
+            "dora",
+            "DORA-PLN-20260501B-T01",
+            {
+                "name": "Invalid source packet",
+                "issue_type": "task",
+                "priority": "P1",
+                "depends_on": [],
+                "labels": ["dora:orchestrator-invalid-submission"],
+            },
+        )
+        client.upsert_issue(
+            "dora",
+            "DORA-PLN-20260501B-T02",
+            {
+                "name": "Next valid task",
+                "issue_type": "task",
+                "priority": "P1",
+                "depends_on": [],
+            },
+        )
+
+        ready = client.next_ready_issue("dora")
+
+        self.assertIsNotNone(ready)
+        self.assertEqual(ready["external_id"], "DORA-PLN-20260501B-T02")
+
     def test_noop_executor_without_required_reads_blocks_release(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
@@ -719,12 +880,13 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
 
         task_result = result["runs"][0]
         issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
-        self.assertEqual(task_result["outcome"], "source_context_missing")
-        self.assertEqual(task_result["state"], "Needs Input")
-        self.assertEqual(issue["state"], "Needs Input")
+        self.assertEqual(task_result["outcome"], "orchestrator_invalid_submission")
+        self.assertEqual(task_result["state"], "Todo")
+        self.assertEqual(issue["state"], "Todo")
         self.assertIsNone(issue["assignee"])
-        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
-        self.assertIn("dora-loop:source-context", [comment["marker"] for comment in client.comments])
+        self.assertIn("dora:orchestrator-invalid-submission", issue.get("labels") or [])
+        self.assertNotIn("dora:source-context-missing", issue.get("labels") or [])
+        self.assertIn("dora-loop:orchestrator-invalid-submission", [comment["marker"] for comment in client.comments])
         get_executor.assert_not_called()
 
     def test_legacy_issue_without_execution_packet_blocks_before_claim(self):
@@ -751,12 +913,13 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
 
         task_result = result["runs"][0]
         issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
-        self.assertEqual(task_result["outcome"], "source_context_missing")
-        self.assertEqual(task_result["state"], "Needs Input")
-        self.assertEqual(issue["state"], "Needs Input")
+        self.assertEqual(task_result["outcome"], "orchestrator_invalid_submission")
+        self.assertEqual(task_result["state"], "Todo")
+        self.assertEqual(issue["state"], "Todo")
         self.assertIsNone(issue["assignee"])
-        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
-        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:source-context"]
+        self.assertIn("dora:orchestrator-invalid-submission", issue.get("labels") or [])
+        self.assertNotIn("dora:source-context-missing", issue.get("labels") or [])
+        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:orchestrator-invalid-submission"]
         self.assertEqual(len(marker_comments), 1)
         self.assertIn("Execution Packet v1 is missing", marker_comments[0]["body"])
         get_executor.assert_not_called()
@@ -786,13 +949,14 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
 
         task_result = result["runs"][0]
         issue = client.issues[("dora", "DORA-PLN-20260501B-T01")]
-        self.assertEqual(task_result["outcome"], "source_context_missing")
-        self.assertEqual(task_result["state"], "Needs Input")
-        self.assertEqual(issue["state"], "Needs Input")
+        self.assertEqual(task_result["outcome"], "orchestrator_invalid_submission")
+        self.assertEqual(task_result["state"], "Todo")
+        self.assertEqual(issue["state"], "Todo")
         self.assertIsNone(issue.get("assignee"))
         self.assertIsNone(issue.get("dagster_run_id"))
-        self.assertIn("dora:source-context-missing", issue.get("labels") or [])
-        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:source-context"]
+        self.assertIn("dora:orchestrator-invalid-submission", issue.get("labels") or [])
+        self.assertNotIn("dora:source-context-missing", issue.get("labels") or [])
+        marker_comments = [comment for comment in client.comments if comment["marker"] == "dora-loop:orchestrator-invalid-submission"]
         self.assertEqual(len(marker_comments), 1)
         self.assertIn("source_docs", marker_comments[0]["body"])
         self.assertIn("source_tables", marker_comments[0]["body"])
@@ -928,6 +1092,123 @@ class RunReadyBatchTaskSourceContextTest(unittest.TestCase):
         self.assertEqual(result["runs"][0]["outcome"], "agent_no_changes")
         self.assertIn(f"worktree at `{actual_worktree}`", captured["prompt"])
         self.assertNotIn(f"worktree at `{wrong_configured_worktree}`", captured["prompt"])
+
+    def test_delivery_materializes_source_context_before_bundle_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            (repo / "docs" / "dora" / "batches" / "20260526D").mkdir(parents=True)
+            (repo / "docs" / "dora" / "batches" / "20260526D" / "program-page.md").write_text(
+                "# Program page\n",
+                encoding="utf-8",
+            )
+            worktree_root = repo / "worktrees"
+            actual_worktree = worktree_root / "dora" / "20260526D"
+            client = InMemoryPlaneClient()
+            client.upsert_project("dora", "Dora")
+            client.upsert_issue("dora", "DORA-PLN-20260526D-T01", {
+                "name": "Use generated batch source docs",
+                "body": "# Task Summary\n\nUse the source context.\n",
+                "issue_type": "task",
+                "priority": "P3",
+                "depends_on": [],
+                "agent_hint": "codex",
+                "verification_commands": ["true"],
+                "execution_packet_version": 1,
+                "source_pages": [
+                    {"path": "docs/dora/batches/20260526D/program-page.md", "required": True},
+                ],
+                "source_docs": [],
+                "source_tables": [],
+                "source_queries": [],
+            })
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="codex",
+                project_slug="dora",
+            )
+            delivery = DeliveryConfig(
+                repo_root=repo,
+                project_slug="dora",
+                worktree_root=worktree_root,
+                enable_commit=True,
+            )
+            events: list[tuple[str, dict]] = []
+
+            def _fake_ensure_worktree(_repo_root, wt_path, _branch, _base_branch, auto_clean=False):
+                wt_path.mkdir(parents=True)
+                return True, False
+
+            with (
+                patch("orchestrator.delivery.ensure_worktree", side_effect=_fake_ensure_worktree),
+                patch("orchestrator.delivery.run_delivery", return_value=DeliveryResult()),
+                patch("orchestrator.run_ready_task.get_executor", return_value=_ReadRequiredSourceExecutor()),
+            ):
+                result = run_ready_batch_task(
+                    config,
+                    plane_client=client,
+                    run_id="delivery-source-materialized",
+                    delivery=delivery,
+                    on_progress=lambda event, data: events.append((event, data)),
+                )
+            materialized_exists = (actual_worktree / "docs" / "dora" / "batches" / "20260526D" / "program-page.md").is_file()
+
+        self.assertEqual(result["runs"][0]["outcome"], "agent_no_changes")
+        self.assertEqual(result["runs"][0]["state"], "Done")
+        self.assertTrue(materialized_exists)
+        self.assertIn(
+            ("source_context_materialized", {"external_id": "DORA-PLN-20260526D-T01", "file_count": 1}),
+            events,
+        )
+
+    def test_materializes_source_context_files_into_delivery_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_root = root / "source"
+            worktree_root = root / "worktree"
+            (source_root / "docs" / "dora" / "batches" / "20260526D").mkdir(parents=True)
+            (source_root / "docs" / "dora" / "contracts").mkdir(parents=True)
+            (source_root / "docs" / "dora" / "batches" / "20260526D" / "program-page.md").write_text(
+                "# Program page\n",
+                encoding="utf-8",
+            )
+            (source_root / "docs" / "dora" / "batches" / "20260526D" / "summary.md").write_text(
+                "# Summary\n",
+                encoding="utf-8",
+            )
+            (source_root / "docs" / "dora" / "contracts" / "ledger.tsv").write_text(
+                "row_id\tname\nF97-036\tForm list\n",
+                encoding="utf-8",
+            )
+            issue = {
+                "source_pages": [
+                    {"path": "docs/dora/batches/20260526D/program-page.md", "required": True},
+                ],
+                "source_summaries": [
+                    {"path": "docs/dora/batches/20260526D/summary.md", "required": True},
+                ],
+                "source_docs": [
+                    {"path": "docs/dora/contracts/ledger.tsv", "required": True},
+                ],
+                "source_tables": [
+                    {"id": "ledger", "path": "docs/dora/contracts/ledger.tsv", "format": "tsv", "required": True},
+                ],
+            }
+
+            copied = _materialize_source_context_files(issue, source_root=source_root, worktree_root=worktree_root)
+
+            self.assertEqual(
+                sorted(str(path.relative_to(worktree_root.resolve())) for path in copied),
+                [
+                    "docs/dora/batches/20260526D/program-page.md",
+                    "docs/dora/batches/20260526D/summary.md",
+                    "docs/dora/contracts/ledger.tsv",
+                ],
+            )
+            self.assertEqual(
+                (worktree_root / "docs" / "dora" / "batches" / "20260526D" / "program-page.md").read_text(encoding="utf-8"),
+                "# Program page\n",
+            )
 
 
 class RunReadyBatchTaskLoopTest(unittest.TestCase):

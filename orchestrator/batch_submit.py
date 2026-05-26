@@ -15,12 +15,7 @@ from .batch_models import (
     TaskIssueBatch,
     TaskIssueDraft,
 )
-from .source_context import (
-    EXECUTION_PACKET_VERSION,
-    source_docs_for_task,
-    source_queries_from_batch,
-    source_tables_from_batch,
-)
+from .source_preflight import preflight_batch_source_context
 
 
 def submit_task_issue_batch(
@@ -38,9 +33,14 @@ def submit_task_issue_batch(
     approval = _load_approval(batch)
     _validate_approval(batch, approval, repo_root)
     batch_hash = compute_batch_hash(batch.path, repo_root=repo_root)
-    source_tables = [table.to_issue_dict() for table in source_tables_from_batch(batch)]
-    source_queries = [query.to_issue_dict() for query in source_queries_from_batch(batch)]
-
+    source_preflight = preflight_batch_source_context(batch, execution_packet_hash=batch_hash)
+    if not source_preflight.ok:
+        messages = [
+            f"{finding.task_id}: {finding.message}" if finding.task_id else finding.message
+            for finding in source_preflight.findings
+        ]
+        raise ValueError("source preflight failed: " + "; ".join(messages))
+    preflight_by_task = {item.task_id: item.issue for item in source_preflight.task_results}
     plane_client.upsert_project(project_slug, project_title)
     for module in sorted(FIXED_MODULE_TAXONOMY):
         plane_client.upsert_module(project_slug, module)
@@ -88,7 +88,7 @@ def submit_task_issue_batch(
         },
     )
     for task in batch.tasks:
-        source_docs = [doc.to_issue_dict(batch.repo_root) for doc in source_docs_for_task(batch, task)]
+        preflight_issue = preflight_by_task[task.task_id]
         risk = str(task.metadata.get("risk") or "medium")
         priority = task.priority or "P3"
         progress_metadata = {
@@ -116,11 +116,11 @@ def submit_task_issue_batch(
                 "acceptance": _parse_acceptance_bullets(task.sections.get("Acceptance", "")),
                 "verification_level": _list_value(task.metadata.get("verification_level")) or ["L1", "L2", "L3"],
                 "verification_commands": _list_value(task.metadata.get("verification_commands")),
-                "execution_packet_version": EXECUTION_PACKET_VERSION,
-                "execution_packet_hash": batch_hash,
-                "source_docs": source_docs,
-                "source_tables": source_tables,
-                "source_queries": source_queries,
+                "execution_packet_version": preflight_issue["execution_packet_version"],
+                "execution_packet_hash": preflight_issue["execution_packet_hash"],
+                "source_docs": preflight_issue["source_docs"],
+                "source_tables": preflight_issue["source_tables"],
+                "source_queries": preflight_issue["source_queries"],
                 "required_skills": _list_value(task.metadata.get("required_skills")),
                 "suggested_skills": _list_value(task.metadata.get("suggested_skills")),
                 "forbidden_skills": _list_value(task.metadata.get("forbidden_skills")),

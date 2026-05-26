@@ -388,6 +388,72 @@ class LivePlaneClientTest(unittest.TestCase):
         # Root Epic is excluded entirely.
         self.assertEqual(ready["external_id"], "DORA-AGCORE-20260501C-T01")
 
+    def test_next_ready_issue_skips_orchestrator_invalid_submission_label(self):
+        api = FakePlaneApi(
+            states=[{"id": "state-todo", "name": "Todo"}],
+            labels=[
+                {"id": "label-invalid", "name": "dora:orchestrator-invalid-submission"},
+            ],
+            issues=[
+                {
+                    "id": "issue-invalid",
+                    "external_id": "DORA-AGCORE-20260501C-T01",
+                    "state": "state-todo",
+                    "priority": "urgent",
+                    "labels": ["label-invalid"],
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        self.assertIsNone(client.next_ready_issue("dora"))
+
+    def test_invalid_submission_does_not_block_next_generated_task(self):
+        api = FakePlaneApi(
+            states=[{"id": "state-todo", "name": "Todo"}],
+            labels=[
+                {"id": "label-invalid", "name": "dora:orchestrator-invalid-submission"},
+            ],
+            issues=[
+                {
+                    "id": "issue-invalid",
+                    "external_id": "DORA-AGCORE-20260501C-T01",
+                    "state": "state-todo",
+                    "priority": "urgent",
+                    "labels": ["label-invalid"],
+                },
+                {
+                    "id": "issue-next",
+                    "external_id": "DORA-AGCORE-20260501C-T02",
+                    "state": "state-todo",
+                    "priority": "urgent",
+                    "labels": [],
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        ready = client.next_ready_issue("dora")
+
+        self.assertIsNotNone(ready)
+        self.assertEqual(ready["external_id"], "DORA-AGCORE-20260501C-T02")
+
     def test_next_ready_issue_waits_when_earliest_generated_task_is_in_progress(self):
         api = FakePlaneApi(
             states=[

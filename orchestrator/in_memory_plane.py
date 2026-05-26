@@ -7,10 +7,20 @@ from .issue_order import batch_sort_key, batch_task_order_key
 
 READY_STATES = {"Backlog", "Todo", "Blocked", "Partial"}
 TERMINAL_STATES = {"Done", "Cancelled"}
+ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
 
 
 def _deps_satisfied(issue: dict[str, Any], done: set[str]) -> bool:
     return all(dep in done for dep in issue.get("depends_on", []))
+
+
+def _has_label(issue: dict[str, Any], label_name: str) -> bool:
+    for label in issue.get("labels") or []:
+        if label == label_name:
+            return True
+        if isinstance(label, dict) and label.get("name") == label_name:
+            return True
+    return False
 
 
 @dataclass
@@ -77,6 +87,8 @@ class InMemoryPlaneClient:
         candidates = []
         for (slug, external_id), issue in self.issues.items():
             if slug != project_slug or issue.get("state") not in READY_STATES:
+                continue
+            if _has_label(issue, ORCHESTRATOR_INVALID_SUBMISSION_LABEL):
                 continue
             if issue.get("issue_type") == "root_epic":
                 continue
@@ -232,6 +244,8 @@ class InMemoryPlaneClient:
         keys: list[tuple[str, int, str]] = []
         for (slug, external_id), issue in self.issues.items():
             if slug != project_slug or issue.get("issue_type") == "root_epic":
+                continue
+            if _has_label(issue, ORCHESTRATOR_INVALID_SUBMISSION_LABEL):
                 continue
             if issue.get("state") in TERMINAL_STATES:
                 continue

@@ -81,6 +81,40 @@ class SourceBundleTest(unittest.TestCase):
             self.assertIn("current_task_row.tsv", bundle_text)
             self.assertNotIn("Use the real forms API.", bundle_text)
 
+    def test_create_source_bundle_no_write_validates_without_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            (repo / "docs").mkdir()
+            (repo / "docs" / "design.md").write_text("# Design\n", encoding="utf-8")
+            (repo / "ledger.tsv").write_text("row_id\tvalue\nF97-036\tready\n", encoding="utf-8")
+            issue = {
+                "external_id": "DORA-PLN-20260501B-T01",
+                "execution_packet_version": 1,
+                "row_id": "F97-036",
+                "source_docs": [
+                    {"kind": "source_docs", "path": "docs/design.md", "required": True}
+                ],
+                "source_tables": [
+                    {"id": "ledger", "path": "ledger.tsv", "format": "tsv", "required": True}
+                ],
+                "source_queries": [
+                    {
+                        "id": "current_task",
+                        "table": "ledger",
+                        "required": True,
+                        "filters": [{"column": "row_id", "op": "equals", "value_from": "task.row_id"}],
+                        "columns": ["row_id", "value"],
+                        "max_rows": 10,
+                    }
+                ],
+            }
+
+            result = create_source_bundle(issue=issue, worktree_root=repo, write_output=False)
+
+            self.assertTrue(result.ok, result.message)
+            self.assertEqual(result.slice_results[0].row_count, 1)
+            self.assertFalse((repo / ".dora" / "source-bundles").exists())
+
     def test_binary_source_docs_are_attested_but_not_required_reads(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()

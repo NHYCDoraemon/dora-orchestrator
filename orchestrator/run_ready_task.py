@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from .batch_models import PROGRESS_METADATA_FIELDS
 from .config import OrchestratorConfig
@@ -18,8 +20,11 @@ from .plane_backends import create_plane_client
 from .plane_provisioner import provision_project
 from .spec_loader import load_project_spec
 from .source_bundle import EXECUTION_PACKET_VERSION, SourceBundleResult, create_source_bundle
+from .source_context import SOURCE_DOC_KEYS
 from .source_evidence import evaluate_source_evidence_from_event_path
 from .task_graph import build_task_graph
+
+ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
 
 if TYPE_CHECKING:
     from .delivery import DeliveryConfig
@@ -173,7 +178,7 @@ def run_ready_batch_task(
         outcome = str(result.get("outcome", ""))
         if outcome == "no_ready":
             break
-        if outcome == "source_context_missing":
+        if outcome == "orchestrator_invalid_submission":
             break
         if outcome == "source_evidence_missing":
             break
@@ -241,12 +246,12 @@ def _execute_one_task(
 
     if issue.get("execution_packet_version") != EXECUTION_PACKET_VERSION:
         message = "Execution Packet v1 is missing; batch must be regenerated and resubmitted before executor claim."
-        _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+        _mark_orchestrator_invalid_submission(plane_client, config.project_slug, external_id, message)
         if on_progress:
-            on_progress("source_context_missing", {"external_id": external_id, "message": message})
+            on_progress("orchestrator_invalid_submission", {"external_id": external_id, "message": message})
         return {
-            "outcome": "source_context_missing",
-            "state": "Needs Input",
+            "outcome": "orchestrator_invalid_submission",
+            "state": str(issue.get("state") or ""),
             "run_id": run_id,
             "external_id": external_id,
             "issue": str(issue.get("key") or external_id),
@@ -254,12 +259,12 @@ def _execute_one_task(
     source_bundle = create_source_bundle(issue=issue, worktree_root=config.target_repo)
     if not source_bundle.ok:
         message = source_bundle.message or "source context bundle generation failed"
-        _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+        _mark_orchestrator_invalid_submission(plane_client, config.project_slug, external_id, message)
         if on_progress:
-            on_progress("source_context_missing", {"external_id": external_id, "message": message})
+            on_progress("orchestrator_invalid_submission", {"external_id": external_id, "message": message})
         return {
-            "outcome": "source_context_missing",
-            "state": "Needs Input",
+            "outcome": "orchestrator_invalid_submission",
+            "state": str(issue.get("state") or ""),
             "run_id": run_id,
             "external_id": external_id,
             "issue": str(issue.get("key") or external_id),
@@ -299,17 +304,38 @@ def _execute_one_task(
         else:
             repo_root = config.target_repo
             branch = f"orchestrator/{executor_name}/{claimed['key']}"
+        resume_context = _build_resume_context(repo_root, run_id)
+
+        materialized_paths = _materialize_source_context_files(
+            claimed,
+            source_root=config.target_repo,
+            worktree_root=repo_root,
+        )
+        if materialized_paths:
+            body = "\n".join(_repo_or_abs_path(path, repo_root) for path in materialized_paths)
+            _emit(plane_client, config.project_slug, external_id, "dora-loop:source-context:materialized", body)
+            if on_progress:
+                on_progress(
+                    "source_context_materialized",
+                    {"external_id": external_id, "file_count": len(materialized_paths)},
+                )
 
         source_bundle = create_source_bundle(issue=claimed, worktree_root=repo_root)
         if not source_bundle.ok:
             message = source_bundle.message or "source context bundle generation failed"
-            _mark_source_context_missing(plane_client, config.project_slug, external_id, message)
+            _mark_orchestrator_invalid_submission(
+                plane_client,
+                config.project_slug,
+                external_id,
+                message,
+                release_state="Todo",
+            )
             _released = True
             if on_progress:
-                on_progress("source_context_missing", {"external_id": external_id, "message": message})
+                on_progress("orchestrator_invalid_submission", {"external_id": external_id, "message": message})
             return {
-                "outcome": "source_context_missing",
-                "state": "Needs Input",
+                "outcome": "orchestrator_invalid_submission",
+                "state": "Todo",
                 "run_id": run_id,
                 "external_id": external_id,
                 "issue": str(claimed.get("key") or external_id),
@@ -320,6 +346,7 @@ def _execute_one_task(
             prompt_text = _render_executor_prompt(
                 claimed, batch_id=_extract_batch_id(external_id),
                 branch=branch, worktree_path=repo_root,
+                resume_context=resume_context,
             )
         else:
             prompt_text = _render_batch_prompt(claimed)
@@ -375,6 +402,7 @@ def _execute_one_task(
         verification = _run_verification_commands(
             list(claimed.get("verification_commands") or []),
             repo_root,
+            extra_env=config.executor_env or {},
         )
         artifacts.verify_path.write_text(_format_verification(verification) + "\n", encoding="utf-8")
         _emit(plane_client, config.project_slug, external_id, "dora-loop:verify",
@@ -416,6 +444,8 @@ def _execute_one_task(
             terminal_state = "Done"
         elif strict_progress and result_signal and result_signal.get("status") == "needs_input":
             terminal_state = "Needs Input"
+        elif outcome == "agent_transient_error":
+            terminal_state = "Partial"
         elif retry_count >= 3:
             outcome = "agent_unverified"
             terminal_state = "Needs Input"
@@ -589,6 +619,109 @@ def _execute_one_task(
     return ret
 
 
+def _materialize_source_context_files(
+    issue: Mapping[str, object],
+    *,
+    source_root: Path,
+    worktree_root: Path,
+) -> list[Path]:
+    """Copy declared source-context files into an isolated delivery worktree.
+
+    Batch submit may be run before generated batch docs are committed. The
+    executor worktree is created from git, so those source docs can be present
+    in the source workspace but absent from the worktree. Copy only the files
+    explicitly declared in Execution Packet v1.
+    """
+    resolved_source_root = source_root.resolve()
+    resolved_worktree_root = worktree_root.resolve()
+    if resolved_source_root == resolved_worktree_root:
+        return []
+
+    copied: list[Path] = []
+    seen: set[str] = set()
+    for raw_path in _declared_source_context_paths(issue):
+        rel_path = _source_context_relative_path(raw_path, resolved_source_root)
+        if rel_path is None:
+            continue
+        rel_key = rel_path.as_posix()
+        if rel_key in seen:
+            continue
+        seen.add(rel_key)
+
+        source_path = (resolved_source_root / rel_path).resolve()
+        target_path = (resolved_worktree_root / rel_path).resolve()
+        if not _is_inside(source_path, resolved_source_root):
+            continue
+        if not _is_inside(target_path, resolved_worktree_root):
+            continue
+        if not source_path.is_file() or target_path.exists():
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        copied.append(target_path)
+    return copied
+
+
+def _declared_source_context_paths(issue: Mapping[str, object]) -> list[str]:
+    paths: list[str] = []
+    for key in SOURCE_DOC_KEYS:
+        for item in _source_context_list_value(issue.get(key)):
+            value = item.get("path") if isinstance(item, Mapping) else item
+            if value:
+                paths.append(str(value))
+    for item in _source_context_list_value(issue.get("source_tables")):
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("path")
+        if value:
+            paths.append(str(value))
+    return paths
+
+
+def _source_context_list_value(value: object) -> list[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str) and value:
+        return [value]
+    return []
+
+
+def _source_context_relative_path(raw_path: str, source_root: Path) -> Path | None:
+    value = raw_path.strip()
+    if not value:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            rel_path = path.resolve().relative_to(source_root)
+        except ValueError:
+            return None
+    else:
+        rel_path = path
+    if rel_path.is_absolute() or any(part == ".." for part in rel_path.parts):
+        return None
+    return rel_path
+
+
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _repo_or_abs_path(path: Path, repo_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def _recover_run_claims(plane_client, project_slug: str, run_id: str) -> int:
     """Release any issues stuck In Progress from a previous attempt of *run_id*.
 
@@ -641,20 +774,25 @@ def _emit(plane_client, project_slug, external_id, marker, body):
         pass
 
 
-def _mark_source_context_missing(plane_client, project_slug: str, external_id: str, message: str) -> None:
+def _mark_orchestrator_invalid_submission(
+    plane_client,
+    project_slug: str,
+    external_id: str,
+    message: str,
+    *,
+    release_state: str | None = None,
+) -> None:
     if hasattr(plane_client, "add_label"):
         try:
-            plane_client.add_label(project_slug, external_id, "dora:source-context-missing")
+            plane_client.add_label(project_slug, external_id, ORCHESTRATOR_INVALID_SUBMISSION_LABEL)
         except (RuntimeError, KeyError):
             pass
-    _emit(plane_client, project_slug, external_id, "dora-loop:source-context", message)
-    try:
-        plane_client.release_issue(project_slug, external_id, "Needs Input")
-        if hasattr(plane_client, "issues") and isinstance(plane_client.issues, dict):
-            plane_client.issues[(project_slug, external_id)]["state"] = "Needs Input"
-            plane_client.issues[(project_slug, external_id)]["assignee"] = None
-    except (RuntimeError, KeyError):
-        pass
+    _emit(plane_client, project_slug, external_id, "dora-loop:orchestrator-invalid-submission", message)
+    if release_state is not None:
+        try:
+            plane_client.release_issue(project_slug, external_id, release_state)
+        except (RuntimeError, KeyError):
+            pass
 
 
 def _format_stream_line(line: str) -> str | None:
@@ -933,6 +1071,7 @@ def _render_executor_prompt(
     batch_id: str,
     branch: str,
     worktree_path,
+    resume_context: str = "",
 ) -> str:
     """Wrap the issue body with autonomous-execution framing.
 
@@ -965,6 +1104,7 @@ def _render_executor_prompt(
         f"{suggested_skills_section}"
         f"{forbidden_skills_section}"
         f"{progress_contract_section}"
+        f"{resume_context.rstrip() + chr(10) + chr(10) if resume_context.strip() else ''}"
         "# Operating rules\n"
         "1. **Decide and act.** The Issue Packet below is the contract. Make "
         "the most reasonable assumption it supports and proceed; do not ask "
@@ -1002,6 +1142,73 @@ def _render_executor_prompt(
         "# Issue Packet\n\n"
     )
     return header + body
+
+
+def _build_resume_context(repo_root: Path, current_run_id: str) -> str:
+    """Build a compact continuation hint from the previous WIP delivery commit."""
+    try:
+        proc = subprocess.run(
+            ["git", "log", "-1", "--format=%H%x00%s%x00%B"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    parts = proc.stdout.split("\x00", 2)
+    if len(parts) < 3:
+        return ""
+    sha, subject, body = parts[0].strip(), parts[1].strip(), parts[2]
+    if not subject.startswith("[WIP]"):
+        return ""
+
+    match = re.search(r"dagster-run-id:\s*([^\s]+)", body)
+    previous_run_id = match.group(1).strip() if match else ""
+    if not previous_run_id or previous_run_id == current_run_id:
+        return ""
+
+    previous_root = repo_root / ".dora" / "loop-runs" / previous_run_id
+    summary_path = previous_root / "summary.md"
+    verify_path = previous_root / "verify.txt"
+    summary = _read_text_snippet(summary_path, 800)
+    verification = _read_text_snippet(verify_path, 1000)
+
+    lines = [
+        "# Resume Context",
+        "",
+        "This branch contains a WIP delivery commit from a previous executor run.",
+        f"- Previous run id: `{previous_run_id}`",
+        f"- WIP commit: `{sha[:12]}` {subject}",
+        f"- Previous summary path: `{summary_path}`",
+        f"- Previous verification path: `{verify_path}`",
+        "",
+        "Start by inspecting the existing work instead of rediscovering the repository:",
+        "```bash",
+        "git show --stat --oneline HEAD",
+        f"cat {verify_path}",
+        "```",
+        "",
+        "Continue from the existing WIP commit. Do not restart broad repo discovery unless the previous diff is clearly irrelevant.",
+    ]
+    if summary:
+        lines.extend(["", "Previous summary:", "```text", summary, "```"])
+    if verification:
+        lines.extend(["", "Previous verification:", "```text", verification, "```"])
+    return "\n".join(lines)
+
+
+def _read_text_snippet(path: Path, limit: int) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n...[truncated]"
 
 
 def _render_required_skills_section(required_skills: list[str]) -> str:
@@ -1354,11 +1561,17 @@ def _extract_frontmatter_value(description_html: str, key: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def _run_verification_commands(commands: list[str], repo_root: Path) -> dict[str, object]:
+def _run_verification_commands(
+    commands: list[str],
+    repo_root: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, object]:
     if not commands:
         return {"pass": True, "skipped": True, "results": []}
     results = []
     all_pass = True
+    env = {**os.environ, **(extra_env or {})}
     for command in commands:
         try:
             proc = subprocess.run(
@@ -1368,6 +1581,7 @@ def _run_verification_commands(commands: list[str], repo_root: Path) -> dict[str
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=env,
             )
             ok = proc.returncode == 0
             returncode = proc.returncode

@@ -30,6 +30,7 @@ _DORA_METADATA_KEYS = [
     "source_queries",
     "verification_commands",
 ]
+ORCHESTRATOR_INVALID_SUBMISSION_LABEL = "dora:orchestrator-invalid-submission"
 _ORCHESTRATOR_STATE_PAYLOADS = {
     "Blocked": {
         "name": "Blocked",
@@ -199,13 +200,14 @@ class LivePlaneClient:
 
     def next_ready_issue(self, project_slug: str, *, exclude: set[str] | None = None) -> dict[str, Any] | None:
         states = {item["id"]: item["name"] for item in self.api.paginate_v1(f"{self.proj_v1}/states/")}
+        label_names_by_id = self._label_names_by_id()
         issues = list(self.api.paginate_v1(f"{self.proj_v1}/issues/"))
         done = {
             issue.get("external_id")
             for issue in issues
             if states.get(issue.get("state")) in {"Done", "Cancelled"}
         }
-        strict_head = _strict_ready_head_key(issues, states, done)
+        strict_head = _strict_ready_head_key(issues, states, done, label_names_by_id)
         now_utc = datetime.now(timezone.utc)
         stale_timeout = self.settings.stale_lock_timeout_seconds
         candidates = []
@@ -224,6 +226,8 @@ class LivePlaneClient:
             if strict_head is not None and order_key != strict_head:
                 continue
             if exclude and external_id in exclude:
+                continue
+            if ORCHESTRATOR_INVALID_SUBMISSION_LABEL in _issue_label_names(issue.get("labels"), label_names_by_id):
                 continue
 
             # Stale lock detection (defensive — see docs/audit/orchestrator-runaway):
@@ -1104,11 +1108,14 @@ def _strict_ready_head_key(
     issues: list[dict[str, Any]],
     states: dict[str, str],
     done: set[str],
+    label_names_by_id: dict[str, str],
 ) -> tuple[str, int, str] | None:
     keys: list[tuple[str, int, str]] = []
     for issue in issues:
         external_id = issue.get("external_id") or ""
         if not external_id or external_id.endswith("-ROOT"):
+            continue
+        if ORCHESTRATOR_INVALID_SUBMISSION_LABEL in _issue_label_names(issue.get("labels"), label_names_by_id):
             continue
         if states.get(issue.get("state")) in {"Done", "Cancelled"}:
             continue

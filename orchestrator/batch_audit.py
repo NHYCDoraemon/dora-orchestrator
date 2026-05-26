@@ -16,6 +16,7 @@ from .batch_models import (
     TaskIssueDraft,
 )
 from .source_context import SourceQuery, SourceTable, resolve_repo_path, source_queries_from_batch, source_tables_from_batch
+from .source_preflight import preflight_batch_source_context
 from .source_slicing import render_query_slice
 
 
@@ -54,6 +55,7 @@ def audit_task_issue_batch(
         _audit_task_language(task, findings)
         _audit_source_paths(batch, task, findings)
         _audit_required_source_queries(batch, task, source_tables, source_queries, invalid_source_tables, findings)
+    _audit_source_preflight(batch, findings)
 
     planned_cycles = sorted({task.cycle for task in batch.tasks if task.cycle})
     status = "FAIL" if findings else ("PASS_WITH_PLANNED_CREATES" if planned_cycles else "PASS")
@@ -344,6 +346,18 @@ def _audit_required_source_queries(
         )
         if not result.ok:
             findings.append(AuditFinding(code=result.code, message=f"{query.id}: {result.message}", path=str(task.path)))
+
+
+def _audit_source_preflight(batch: TaskIssueBatch, findings: list[AuditFinding]) -> None:
+    result = preflight_batch_source_context(batch, execution_packet_hash="audit")
+    for finding in result.findings:
+        findings.append(
+            AuditFinding(
+                code=finding.code,
+                message=f"{finding.task_id}: {finding.message}" if finding.task_id else finding.message,
+                path=finding.path,
+            )
+        )
 
 
 def _safe_source_query_segment(value: str) -> str:
