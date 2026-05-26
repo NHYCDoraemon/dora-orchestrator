@@ -499,6 +499,50 @@ class LivePlaneClientTest(unittest.TestCase):
             api.calls,
         )
 
+    def test_release_issue_creates_missing_orchestrator_states_before_patch(self):
+        api = FakePlaneApi(
+            states=[
+                {"id": "state-backlog", "name": "Backlog", "group": "backlog"},
+                {"id": "state-todo", "name": "Todo", "group": "unstarted"},
+                {"id": "state-in-progress", "name": "In Progress", "group": "started"},
+                {"id": "state-done", "name": "Done", "group": "completed"},
+                {"id": "state-cancelled", "name": "Cancelled", "group": "cancelled"},
+            ],
+            issues=[
+                {
+                    "id": "issue-needs-input",
+                    "external_id": "DORA-PLN-20260501B-T01",
+                    "state": "state-in-progress",
+                    "priority": "high",
+                    "description_html": "<pre>depends_on: []</pre>",
+                },
+            ],
+        )
+        client = LivePlaneClient(
+            LivePlaneSettings(
+                base_url="https://plane.example",
+                workspace_slug="doraemon",
+                project_id="project-1",
+                api_key="token",
+            ),
+            api=api,
+        )
+
+        client.release_issue("dora", "DORA-PLN-20260501B-T01", "Needs Input")
+
+        created_state_names = {
+            payload["name"]
+            for method, path, payload in api.payloads
+            if method == "POST" and path.endswith("/states/") and payload
+        }
+        self.assertEqual(created_state_names, {"Blocked", "Partial", "Needs Input"})
+        patch_payloads = [
+            payload
+            for method, path, payload in api.payloads
+            if method == "PATCH" and path.endswith("/issues/issue-needs-input/")
+        ]
+        self.assertEqual(patch_payloads[0]["state"], "state-needs-input")
+
     def test_in_progress_held_by_other_agent_is_not_reclaimed(self):
         """Defensive stale-lock policy: an issue assigned to a different
         agent_uuid (or unassigned) is NEVER reclaimed, no matter the
@@ -718,6 +762,7 @@ class LivePlaneClientTest(unittest.TestCase):
 class FakePlaneApi:
     logged_in: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
+    payloads: list[tuple[str, str, dict | None]] = field(default_factory=list)
     projects: list[dict] = field(default_factory=lambda: [{"id": "project-1", "name": "Dora", "identifier": "DORA"}])
     states: list[dict] = field(default_factory=lambda: [{"id": "state-backlog", "name": "Backlog"}])
     modules: list[dict] = field(default_factory=list)
@@ -749,6 +794,7 @@ class FakePlaneApi:
 
     def v1(self, method: str, path: str, payload: dict | None = None, *, ok_statuses=frozenset()):
         self.calls.append((method, path))
+        self.payloads.append((method, path, payload))
         if method == "GET" and path.endswith("/projects/project-1/"):
             return self.projects[0]
         if method == "GET" and "/projects/stale-project-id/" in path and 404 in ok_statuses:
@@ -764,6 +810,10 @@ class FakePlaneApi:
         if method == "POST" and path.endswith("/cycles/"):
             item = {"id": "cycle-s15", **payload}
             self.cycles.append(item)
+            return item
+        if method == "POST" and path.endswith("/states/"):
+            item = {"id": f"state-{payload['name'].lower().replace(' ', '-')}", **payload}
+            self.states.append(item)
             return item
         if method == "POST" and path.endswith("/labels/"):
             item = {"id": f"label-{payload['name']}", **payload}

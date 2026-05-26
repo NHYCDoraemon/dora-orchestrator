@@ -164,6 +164,22 @@ class FactoryDefinitionsTest(unittest.TestCase):
 
         self.assertEqual(set(job.loggers.keys()), {"event_log_only"})
 
+    def test_run_orchestrator_op_has_no_dagster_retry_policy(self):
+        from orchestrator.dagster_defs import ProjectConfig, build_project_defs
+
+        defs = build_project_defs(
+            ProjectConfig(
+                slug="noretry",
+                title="No Retry",
+                repo_root=Path("/tmp/noretry"),
+            )
+        )
+
+        job = defs.get_repository_def().get_job("noretry_run_ready_batch_task")
+        node = job.graph.node_named("noretry_run_orchestrator")
+
+        self.assertIsNone(node.retry_policy)
+
     def test_build_orchestrated_projects_defs_merges_multiple_projects(self):
         from orchestrator.dagster_defs import build_orchestrated_projects_defs
 

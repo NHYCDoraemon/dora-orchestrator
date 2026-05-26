@@ -20,7 +20,6 @@ from dagster import (
     Definitions,
     MaterializeResult,
     MetadataValue,
-    RetryPolicy,
     RunRequest,
     RunsFilter,
     ScheduleEvaluationContext,
@@ -58,7 +57,6 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
     """Build per-project job + schedule + manual UI assets."""
 
     run_op = build_single_op(cfg)
-    op_retry = RetryPolicy(max_retries=2, delay=5)
 
     job_name = f"{cfg.safe_name}_run_ready_batch_task"
     schedule_name = f"{cfg.safe_name}_every_{_cron_label(cfg.schedule_cron)}"
@@ -80,7 +78,7 @@ def build_project_defs(cfg: ProjectConfig) -> Definitions:
         logger_defs={"event_log_only": event_log_only_logger},
     )
     def run_job():
-        run_op.with_retry_policy(op_retry)()
+        run_op()
 
     @schedule(
         name=schedule_name,

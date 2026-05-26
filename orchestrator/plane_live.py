@@ -30,6 +30,26 @@ _DORA_METADATA_KEYS = [
     "source_queries",
     "verification_commands",
 ]
+_ORCHESTRATOR_STATE_PAYLOADS = {
+    "Blocked": {
+        "name": "Blocked",
+        "group": "backlog",
+        "color": "#FF6B00",
+        "description": "Blocked by unfinished dependencies",
+    },
+    "Partial": {
+        "name": "Partial",
+        "group": "started",
+        "color": "#f1cc36",
+        "description": "Executor made progress but did not finish verification",
+    },
+    "Needs Input": {
+        "name": "Needs Input",
+        "group": "unstarted",
+        "color": "#ed6cb1",
+        "description": "Waiting for operator input before execution can continue",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -717,7 +737,17 @@ class LivePlaneClient:
                 for item in self.api.paginate_v1(f"{self.proj_v1}/states/")
                 if item.get("name") and item.get("id")
             }
+            self._ensure_orchestrator_states(self._state_by_name)
         return self._state_by_name
+
+    def _ensure_orchestrator_states(self, state_by_name: dict[str, str]) -> None:
+        for name, payload in _ORCHESTRATOR_STATE_PAYLOADS.items():
+            if name in state_by_name:
+                continue
+            created = self.api.v1("POST", f"{self.proj_v1}/states/", payload)
+            if not isinstance(created, dict) or not created.get("id"):
+                raise RuntimeError(f"Plane state create failed: {name}")
+            state_by_name[name] = str(created["id"])
 
     def _modules(self) -> dict[str, dict[str, Any]]:
         if self._module_by_name is None:
