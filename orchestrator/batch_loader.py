@@ -10,6 +10,7 @@ SECTION_RE = re.compile(r"^# (?P<title>.+?)\s*$", re.MULTILINE)
 SOURCE_TABLE_KEYS = {"id", "path", "format", "key_columns", "required"}
 SOURCE_QUERY_KEYS = {"id", "table", "required", "filters", "columns", "max_rows"}
 SOURCE_FILTER_KEYS = {"column", "op", "value", "value_from"}
+ACCEPTANCE_CHECK_KEYS = {"kind", "path", "headings", "pattern", "min", "cmd"}
 
 
 def load_task_issue_batch(batch_dir: Path, *, repo_root: Path | None = None) -> TaskIssueBatch:
@@ -122,6 +123,17 @@ def _parse_yaml_block(
     if index >= len(lines) or lines[index][1] <= parent_indent:
         return [], index
     line_no, indent, text = lines[index]
+    if key == "acceptance_checks":
+        return _parse_yaml_mapping_list(
+            lines,
+            index,
+            indent=indent,
+            path=path,
+            allowed_keys=ACCEPTANCE_CHECK_KEYS,
+            bool_scalar_keys=set(),
+            nested_scalar_lists={"headings"},
+            nested_mapping_lists=set(),
+        )
     if key == "source_tables":
         return _parse_yaml_mapping_list(
             lines,

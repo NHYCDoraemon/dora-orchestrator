@@ -234,6 +234,26 @@ class BatchSubmitTest(unittest.TestCase):
             source_doc = next(item for item in task["source_docs"] if item["path"] == "docs/design.md")
             self.assertTrue(source_doc["sha256"].startswith("sha256:"))
 
+    def test_submit_propagates_acceptance_checks_into_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            batch_dir = create_approved_batch(repo)
+            client = InMemoryPlaneClient()
+
+            submit_task_issue_batch(
+                batch_dir,
+                repo_root=repo,
+                project_slug="dora",
+                project_title="Dora",
+                plane_client=client,
+            )
+
+            issue = client.issues[("dora", "DORA-CTX-20260501A-T01")]
+            self.assertIsInstance(issue["acceptance_checks"], list)
+            self.assertTrue(issue["acceptance_checks"])
+            self.assertIn("kind", issue["acceptance_checks"][0])
+            self.assertEqual(issue["acceptance_checks"][0]["kind"], "shell")
+
     def test_rejects_batch_without_approval_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

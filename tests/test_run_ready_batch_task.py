@@ -1453,5 +1453,181 @@ class RunReadyBatchTaskCircuitBreakerTest(unittest.TestCase):
             self.assertEqual(result["loop_count"], 1)
 
 
+class RunReadyBatchTaskAcceptanceChecksTest(unittest.TestCase):
+    """Acceptance-checks gate the Done decision in the run loop."""
+
+    def _config_for(self, client: InMemoryPlaneClient, tmp: str) -> OrchestratorConfig:
+        return OrchestratorConfig(
+            spec_path=Path(tmp) / "unused.json",
+            target_repo=Path(tmp).resolve(),
+            executor="",
+            project_slug="acc",
+        )
+
+    def test_failing_acceptance_check_blocks_done(self):
+        """An issue whose acceptance_checks fails must not reach Done."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("acc", "Acc")
+            client.upsert_issue(
+                "acc",
+                "ACC-ACC-20260526A-T01",
+                {
+                    "name": "Acceptance task",
+                    "issue_type": "task",
+                    "priority": "P1",
+                    "depends_on": [],
+                    "execution_packet_version": 1,
+                    "source_docs": [],
+                    "source_tables": [],
+                    "source_queries": [],
+                    "acceptance_checks": [
+                        {
+                            "kind": "contains_sections",
+                            "path": "docs/never.md",
+                            "headings": ["## Z."],
+                        },
+                    ],
+                    "verification_commands": [],
+                },
+            )
+            config = self._config_for(client, tmp)
+
+            with patch(
+                "orchestrator.run_ready_task.get_executor",
+                return_value=_ReadRequiredSourceExecutor(),
+            ):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="run-acc-1", max_loops=1
+                )
+
+        run = result["runs"][0]
+        self.assertNotEqual(run["state"], "Done")
+        self.assertIn(run["outcome"], {"agent_unverified", "source_evidence_missing"})
+
+    def test_passing_acceptance_check_allows_done(self):
+        """An issue whose acceptance_checks all pass reaches Done."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            # Create the file that the check will inspect.
+            docs = repo / "docs"
+            docs.mkdir()
+            (docs / "present.md").write_text("# Header\n## Z.\n", encoding="utf-8")
+
+            client = InMemoryPlaneClient()
+            client.upsert_project("acc", "Acc")
+            client.upsert_issue(
+                "acc",
+                "ACC-ACC-20260526A-T02",
+                {
+                    "name": "Acceptance task passing",
+                    "issue_type": "task",
+                    "priority": "P1",
+                    "depends_on": [],
+                    "execution_packet_version": 1,
+                    "source_docs": [],
+                    "source_tables": [],
+                    "source_queries": [],
+                    "acceptance_checks": [
+                        {
+                            "kind": "contains_sections",
+                            "path": "docs/present.md",
+                            "headings": ["## Z."],
+                        },
+                    ],
+                    "verification_commands": [],
+                },
+            )
+            config = OrchestratorConfig(
+                spec_path=repo / "unused.json",
+                target_repo=repo,
+                executor="",
+                project_slug="acc",
+            )
+
+            with patch(
+                "orchestrator.run_ready_task.get_executor",
+                return_value=_ReadRequiredSourceExecutor(),
+            ):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="run-acc-2", max_loops=1
+                )
+
+        run = result["runs"][0]
+        self.assertEqual(run["state"], "Done")
+        self.assertEqual(run["outcome"], "agent_done")
+
+    def test_without_acceptance_checks_falls_back_to_verification_commands(self):
+        """An issue with NO acceptance_checks but a passing verification_command
+        still reaches Done — proving the fallback path is intact."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("acc", "Acc")
+            client.upsert_issue(
+                "acc",
+                "ACC-ACC-20260526A-T03",
+                {
+                    "name": "Verification fallback task",
+                    "issue_type": "task",
+                    "priority": "P1",
+                    "depends_on": [],
+                    "execution_packet_version": 1,
+                    "source_docs": [],
+                    "source_tables": [],
+                    "source_queries": [],
+                    # No acceptance_checks — must fall back to verification_commands.
+                    "verification_commands": ["true"],
+                },
+            )
+            config = self._config_for(client, tmp)
+
+            with patch(
+                "orchestrator.run_ready_task.get_executor",
+                return_value=_ReadRequiredSourceExecutor(),
+            ):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="run-acc-3", max_loops=1
+                )
+
+        run = result["runs"][0]
+        self.assertEqual(run["state"], "Done")
+        self.assertEqual(run["outcome"], "agent_done")
+
+    def test_without_acceptance_checks_failing_verification_command_blocks_done(self):
+        """Fallback: a failing verification_command still prevents Done when
+        acceptance_checks is absent — existing behaviour is preserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            client = InMemoryPlaneClient()
+            client.upsert_project("acc", "Acc")
+            client.upsert_issue(
+                "acc",
+                "ACC-ACC-20260526A-T04",
+                {
+                    "name": "Failing verification fallback task",
+                    "issue_type": "task",
+                    "priority": "P1",
+                    "depends_on": [],
+                    "execution_packet_version": 1,
+                    "source_docs": [],
+                    "source_tables": [],
+                    "source_queries": [],
+                    "verification_commands": ["test -f /definitely/not/here/marker"],
+                },
+            )
+            config = self._config_for(client, tmp)
+
+            with patch(
+                "orchestrator.run_ready_task.get_executor",
+                return_value=_ReadRequiredSourceExecutor(),
+            ):
+                result = run_ready_batch_task(
+                    config, plane_client=client, run_id="run-acc-4", max_loops=1
+                )
+
+        run = result["runs"][0]
+        self.assertNotEqual(run["state"], "Done")
+        self.assertIn(run["outcome"], {"agent_unverified", "source_evidence_missing"})
+
+
 if __name__ == "__main__":
     unittest.main()

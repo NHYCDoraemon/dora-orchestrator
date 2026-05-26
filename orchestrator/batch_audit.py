@@ -15,6 +15,7 @@ from .batch_models import (
     TaskIssueBatch,
     TaskIssueDraft,
 )
+from .acceptance import module_floor_satisfied, validate_check_structure
 from .source_context import SourceQuery, SourceTable, resolve_repo_path, source_queries_from_batch, source_tables_from_batch
 from .source_preflight import preflight_batch_source_context
 from .source_slicing import render_query_slice
@@ -51,6 +52,7 @@ def audit_task_issue_batch(
     for task in batch.tasks:
         _audit_task_metadata(batch, task, task_ids, findings)
         _audit_progress_metadata(task, findings)
+        _audit_acceptance_rigor(task, findings)
         _audit_issue_packet_sections(task, findings)
         _audit_task_language(task, findings)
         _audit_source_paths(batch, task, findings)
@@ -387,6 +389,30 @@ def _audit_progress_metadata(task: TaskIssueDraft, findings: list[AuditFinding])
             AuditFinding(
                 code="progress_metadata",
                 message=f"unsupported progress_schema: {schema}",
+                path=str(task.path),
+            )
+        )
+
+
+def _audit_acceptance_rigor(task: TaskIssueDraft, findings: list[AuditFinding]) -> None:
+    raw = task.metadata.get("acceptance_checks")
+    checks = [c for c in raw if isinstance(c, dict)] if isinstance(raw, list) else []
+    if not checks:
+        findings.append(
+            AuditFinding(
+                code="acceptance_rigor",
+                message="task must declare acceptance_checks meeting its module rigor floor",
+                path=str(task.path),
+            )
+        )
+        return
+    for error in validate_check_structure(checks):
+        findings.append(AuditFinding(code="acceptance_rigor", message=error, path=str(task.path)))
+    if not module_floor_satisfied(task.module, checks):
+        findings.append(
+            AuditFinding(
+                code="acceptance_rigor",
+                message=f"module '{task.module}' requires a stronger acceptance check (content or non-trivial behavioral)",
                 path=str(task.path),
             )
         )

@@ -7,6 +7,40 @@ from orchestrator.batch_hash import compute_batch_hash
 from tests.test_batch_loader import create_batch
 
 
+_SECTIONS = (
+    "# Task Summary\n\n概要。\n\n# Development Context\n\n背景。\n\n# Scope\n\n范围。\n\n"
+    "# Non-goals\n\n非目标。\n\n# Implementation Detail\n\n实现。\n\n# Acceptance\n\n验收。\n\n"
+    "# Verification\n\n验证。\n\n# Stop Conditions\n\n停止。\n\n# Executor Prompt Contract\n\n契约。\n"
+)
+
+
+def _build_batch(tmp: str, *, module: str, acceptance_block: str) -> Path:
+    repo = Path(tmp)
+    base = repo / "docs" / "dora" / "batches" / "20260526A"
+    (base / "tasks").mkdir(parents=True, exist_ok=True)
+    (repo / "docs" / "audit").mkdir(parents=True, exist_ok=True)
+    (repo / "docs" / "audit" / "report.md").write_text("## A. x\n| a | b |\n", encoding="utf-8")
+    (base / "batch.md").write_text(
+        "---\nbatch_id: 20260526A\nprogram_id: ACC\nprogram_prefix: ACC\n"
+        "title: \"验收下限\"\nstatus: draft\n---\n\n# 批次\n\n说明。\n", encoding="utf-8")
+    (base / "program-page.md").write_text("# 计划\n\n说明。\n", encoding="utf-8")
+    (base / "tasks" / "ACC-ACC-20260526A-T01.md").write_text(
+        "---\n"
+        "task_id: ACC-ACC-20260526A-T01\n"
+        "title: \"验收任务\"\n"
+        f"module: {module}\n"
+        "sequence: 1\n"
+        "batch_id: 20260526A\n"
+        "program_prefix: ACC\n"
+        "source_pages:\n  - ../program-page.md\n"
+        "source_docs:\n  - docs/audit/report.md\n"
+        "source_summaries:\n  - docs/audit/report.md\n"
+        f"{acceptance_block}"
+        "---\n"
+        f"{_SECTIONS}", encoding="utf-8")
+    return base
+
+
 class BatchAuditTest(unittest.TestCase):
     def test_rejects_batch_without_chinese_management_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,3 +304,73 @@ class BatchAuditTest(unittest.TestCase):
 
             self.assertEqual(result.status, "PASS_WITH_PLANNED_CREATES")
             self.assertFalse(any(finding.code == "source_query_filter" for finding in result.findings))
+
+
+class AcceptanceRigorAuditTest(unittest.TestCase):
+    def test_doc_module_with_only_file_exists_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            block = (
+                "acceptance_checks:\n"
+                "  - kind: file_exists\n"
+                "    path: docs/audit/report.md\n"
+            )
+            base = _build_batch(tmp, module="verification", acceptance_block=block)
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertEqual(result.status, "FAIL")
+            self.assertTrue(any(f.code == "acceptance_rigor" for f in result.findings))
+
+    def test_doc_module_with_content_check_passes_rigor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            block = (
+                "acceptance_checks:\n"
+                "  - kind: contains_sections\n"
+                "    path: docs/audit/report.md\n"
+                "    headings:\n      - \"## A.\"\n"
+            )
+            base = _build_batch(tmp, module="verification", acceptance_block=block)
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertFalse(any(f.code == "acceptance_rigor" for f in result.findings),
+                             [f.message for f in result.findings])
+
+    def test_no_acceptance_checks_fails_rigor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = _build_batch(tmp, module="verification", acceptance_block="")
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertTrue(any(f.code == "acceptance_rigor" for f in result.findings))
+
+    def test_implementation_trivial_shell_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            block = (
+                "acceptance_checks:\n"
+                "  - kind: shell\n"
+                "    cmd: \"test -s docs/audit/report.md\"\n"
+            )
+            base = _build_batch(tmp, module="implementation", acceptance_block=block)
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertTrue(any(f.code == "acceptance_rigor" for f in result.findings))
+
+    def test_implementation_real_shell_passes_rigor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            block = (
+                "acceptance_checks:\n"
+                "  - kind: shell\n"
+                "    cmd: \"go test ./...\"\n"
+            )
+            base = _build_batch(tmp, module="implementation", acceptance_block=block)
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertFalse(any(f.code == "acceptance_rigor" for f in result.findings),
+                             [f.message for f in result.findings])
+
+    def test_illegal_regex_fails_rigor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            block = (
+                "acceptance_checks:\n"
+                "  - kind: min_matches\n"
+                "    path: docs/audit/report.md\n"
+                "    pattern: '('\n"
+                "    min: 1\n"
+            )
+            base = _build_batch(tmp, module="verification", acceptance_block=block)
+            result = audit_task_issue_batch(base, repo_root=Path(tmp))
+            self.assertTrue(any(f.code == "acceptance_rigor" and "regex" in f.message
+                                for f in result.findings))

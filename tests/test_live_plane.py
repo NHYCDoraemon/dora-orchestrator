@@ -2,7 +2,17 @@ import json
 import unittest
 from dataclasses import dataclass, field
 
-from orchestrator.plane_live import LivePlaneClient, LivePlaneSettings, _adapt_issue, _issue_markdown, _markdown_to_html
+from orchestrator.plane_live import (
+    LivePlaneClient,
+    LivePlaneSettings,
+    _DORA_METADATA_KEYS,
+    _adapt_issue,
+    _append_metadata_block,
+    _extract_metadata_block,
+    _issue_markdown,
+    _markdown_to_html,
+    _metadata_payload,
+)
 from orchestrator.source_visibility import classify_source_context
 
 
@@ -822,6 +832,21 @@ class LivePlaneClientTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "PLANE_USER_EMAIL"):
             client.upsert_page("dora", "program-demo", {"title": "Program", "body": "# Program"})
+
+
+class AcceptanceChecksMetadataTest(unittest.TestCase):
+    def test_acceptance_checks_round_trips_through_metadata_block(self):
+        self.assertIn("acceptance_checks", _DORA_METADATA_KEYS)
+        payload = {
+            "acceptance_checks": [
+                {"kind": "contains_sections", "path": "docs/x.md", "headings": ["## A.", "## B."]},
+                {"kind": "min_matches", "path": "docs/x.md", "pattern": r"^\| .+ \|", "min": 10},
+            ]
+        }
+        block = _append_metadata_block("body", _metadata_payload(payload))
+        html_body = _markdown_to_html(block)
+        extracted = _extract_metadata_block(html_body)
+        self.assertEqual(extracted["acceptance_checks"], payload["acceptance_checks"])
 
 
 @dataclass
