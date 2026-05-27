@@ -1526,3 +1526,4 @@ class SourceEvidenceTest(unittest.TestCase):
             result = evaluate_source_evidence_from_event_path(event_path, worktree_root=tmp_path, required_paths=[bundle])
 
             self.assertIs(result.ok, True)
+

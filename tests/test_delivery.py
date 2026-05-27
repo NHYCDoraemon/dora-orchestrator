@@ -171,3 +171,70 @@ class TryUpdateRefTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StageAndCommitVerificationResultShapeTest(unittest.TestCase):
+    """WIP commits list failed verification items. Results come in two shapes:
+    acceptance_checks -> {kind, ok, detail}; verification_commands ->
+    {command, ok, returncode}. The message builder must handle both."""
+
+    def _repo_with_change(self):
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name) / "repo"
+        root.mkdir()
+        for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                     "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}.items():
+            os.environ[k] = v
+        _git(root, "init", "-q", "-b", "main")
+        (root / "seed.txt").write_text("x\n")
+        _git(root, "add", "seed.txt"); _git(root, "commit", "-q", "-m", "init")
+        (root / "evidence.md").write_text("new\n")  # uncommitted change to stage
+        return root, tmp
+
+    def test_wip_commit_with_acceptance_check_results(self):
+        from orchestrator.delivery import _stage_and_commit
+        root, tmp = self._repo_with_change()
+        try:
+            sha, is_wip = _stage_and_commit(
+                root,
+                external_id="DORA-X-T01",
+                task_title="t",
+                outcome="agent_unverified",
+                verification_pass=False,
+                verification_results=[
+                    {"kind": "shell", "ok": False, "detail": "grep -Eq rc=0 (no match)"},
+                    {"kind": "contains_sections", "ok": True, "detail": "all sections present"},
+                ],
+                run_id="r1",
+                branch="feature",
+                is_wip=True,
+            )
+            self.assertTrue(sha)
+            self.assertTrue(is_wip)
+            msg = _git(root, "log", "-1", "--format=%B").stdout
+            self.assertIn("shell", msg)        # failed acceptance check surfaced
+            self.assertIn("FAIL", msg)
+        finally:
+            tmp.cleanup()
+
+    def test_wip_commit_with_command_results(self):
+        from orchestrator.delivery import _stage_and_commit
+        root, tmp = self._repo_with_change()
+        try:
+            sha, _ = _stage_and_commit(
+                root,
+                external_id="DORA-X-T02",
+                task_title="t",
+                outcome="agent_unverified",
+                verification_pass=False,
+                verification_results=[{"command": "mvn -q test", "ok": False, "returncode": 1}],
+                run_id="r2",
+                branch="feature",
+                is_wip=True,
+            )
+            self.assertTrue(sha)
+            msg = _git(root, "log", "-1", "--format=%B").stdout
+            self.assertIn("mvn -q test", msg)
+            self.assertIn("rc=1", msg)
+        finally:
+            tmp.cleanup()
