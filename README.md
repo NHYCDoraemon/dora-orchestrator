@@ -76,6 +76,10 @@ orchestrator provision   # Provision a spec into Plane (legacy)
 
 All commands output JSON to stdout and a human-readable summary to stderr.
 
+> **Plane backend**：query-issues / submit 等命令默认使用内存后端（`ORCHESTRATOR_PLANE_BACKEND` 默认 `memory`）。
+> 要读写真实 Plane（DOR 项目，见 ADR-0119：workspace `console` / project `36803e0a-…`），必须
+> `export ORCHESTRATOR_PLANE_BACKEND=live`，并确保 `~/.dora/plane.env` 已配置当前目标项目。
+
 ## Project discovery
 
 After scaffolding a project, the orchestrator can auto-discover its configuration:
